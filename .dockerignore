@@ -1,0 +1,16 @@
+# Core things we never want in Docker build context
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+.git/
+data/
+models/
+experiments/
+results/
+
+# Python cache
+*.pyc
+*.pyo
+
+# Local env
+.env

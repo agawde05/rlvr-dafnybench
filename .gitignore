@@ -8,3 +8,15 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Project artifacts
+data/
+models/
+experiments/
+results/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Local env/config
+.env

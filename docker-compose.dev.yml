@@ -1,0 +1,23 @@
+services:
+  rlvr:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: rlvr-dev
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+
+    volumes:
+      - .:/workspace:cached
+      - /workspace/.venv
+
+    env_file:
+      - .env
+
+    environment:
+      PYTHONPATH: "/workspace/src"
+      DAFNY_PATH: "/opt/dafny/dafny"
+      HF_HOME: "/workspace/.cache/huggingface"
+
+    command: bash
