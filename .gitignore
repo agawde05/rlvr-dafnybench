@@ -1,22 +1,95 @@
-# Python-generated files
+# =============================================================
+# RLVR-DafnyBench Git Ignore Rules
+# =============================================================
+
+# ---- Python Artifacts ----
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
+*.so
+
+# ---- Build / Packaging ----
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
+.eggs/
+MANIFEST
+*.manifest
+*.spec
 
-# Virtual environments
-.venv
+# ---- Virtual Environments ----
+.venv/
+.uv/
+.conda/
+env/
+venv/
+ENV/
 
-# Project artifacts
+# ---- Testing / Linting ----
+.pytest_cache/
+.coverage
+coverage.xml
+*.cover
+.hypothesis/
+.tox/
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+.pyre/
+.pyright/
+
+# ---- Notebooks / Checkpoints ----
+.ipynb_checkpoints/
+notebooks/.ipynb_checkpoints/
+*.nbconvert.ipynb
+
+# ---- IDE / Editor ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*.bak
+*.tmp
+*.log
+
+# ---- Local Configuration ----
+.env
+.env.*
+*.secret
+secrets.json
+
+# ---- Data / Outputs ----
 data/
+datasets/
 models/
 experiments/
 results/
+outputs/
+logs/
 
-# Notebooks
-.ipynb_checkpoints/
+# ---- Docker / Compose ----
+*.pid
+*.pid.lock
+*.tar
+docker-compose.override.yml
+docker-compose.local.yml
 
-# Local env/config
-.env
+# ---- Misc ----
+.DS_Store
+Thumbs.db
+__MACOSX/
+*.zip
+*.tar.gz
+
+# ---- Generated / Temporary ----
+.tmp/
+.cache/
+*.old
+*.orig
+*.rej
+
+# ---- System Files ----
+ehthumbs.db
+Desktop.ini
+Icon?

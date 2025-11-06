@@ -8,16 +8,23 @@ services:
     stdin_open: true
     tty: true
 
+    # Persistent mounts: code, venv, uv cache
     volumes:
       - .:/workspace:cached
-      - /workspace/.venv
+      - rlvr-venv:/workspace/.venv
+      - rlvr-uvcache:/root/.cache/uv
 
     env_file:
       - .env
 
     environment:
-      PYTHONPATH: "/workspace/src"
+      # Make both src/ and repo root importable
+      PYTHONPATH: "/workspace:/workspace/src"
       DAFNY_PATH: "/opt/dafny/dafny"
       HF_HOME: "/workspace/.cache/huggingface"
 
     command: bash
+
+volumes:
+  rlvr-venv:
+  rlvr-uvcache:

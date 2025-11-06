@@ -9,7 +9,8 @@
       "settings": {
         "python.defaultInterpreterPath": "/workspace/.venv/bin/python",
         "python.analysis.extraPaths": [
-          "/workspace/src"
+          "/workspace/src",
+          "/workspace"
         ],
         "terminal.integrated.defaultProfile.linux": "bash"
       },
@@ -25,6 +26,7 @@
   "postCreateCommand": "uv sync",
   "mounts": [
     "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
-    "source=/workspace/.venv,target=/workspace/.venv,type=volume"
+    "source=rlvr-venv,target=/workspace/.venv,type=volume",
+    "source=rlvr-uvcache,target=/root/.cache/uv,type=volume"
   ]
 }

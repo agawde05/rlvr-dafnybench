@@ -1,5 +1,4 @@
 FROM ubuntu:22.04
-
 ENV DEBIAN_FRONTEND=noninteractive
 
 # --- System deps ---
@@ -17,7 +16,7 @@ RUN wget https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-p
     && apt-get install -y dotnet-sdk-8.0 \
     && rm packages-microsoft-prod.deb
 
-# --- Install Dafny 4.11.0 (Ubuntu 22.04 binary) ---
+# --- Install Dafny 4.11.0 ---
 RUN wget https://github.com/dafny-lang/dafny/releases/download/v4.11.0/dafny-4.11.0-x64-ubuntu-22.04.zip \
     && unzip dafny-4.11.0-x64-ubuntu-22.04.zip -d /opt/dafny \
     && rm dafny-4.11.0-x64-ubuntu-22.04.zip
@@ -25,13 +24,23 @@ RUN wget https://github.com/dafny-lang/dafny/releases/download/v4.11.0/dafny-4.1
 ENV DAFNY_PATH=/opt/dafny/dafny
 ENV PATH="$DAFNY_PATH:$PATH"
 
-# --- Install uv (Official installer) ---
+# --- Install uv ---
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
     && ln -s /root/.local/bin/uv /usr/local/bin/uv \
     && ln -s /root/.local/bin/uvx /usr/local/bin/uvx
 
-# --- Alias python → python3 ---
-RUN ln -s /usr/bin/python3 /usr/bin/python
+# --- Cache dir for uv ---
+VOLUME /root/.cache/uv
+
+# --- Fix interpreter mapping & precreate clean venv ---
+RUN ln -sf /usr/bin/python3 /usr/bin/python
+
+# Create the venv explicitly with Python
+RUN /usr/bin/python3 -m venv /workspace/.venv
+
+# Tell uv to respect system python inside container
+ENV UV_LINK_MODE=copy
+ENV UV_NO_SYNC_VENV=1
 
 WORKDIR /workspace
 CMD ["/bin/bash"]

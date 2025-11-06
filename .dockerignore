@@ -1,16 +1,95 @@
-# Core things we never want in Docker build context
-.venv/
+# =============================================================
+# RLVR-DafnyBench Git Ignore Rules
+# =============================================================
+
+# ---- Python Artifacts ----
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# ---- Build / Packaging ----
+build/
+dist/
+wheels/
+*.egg-info/
+.eggs/
+MANIFEST
+*.manifest
+*.spec
+
+# ---- Virtual Environments ----
+.venv/
+.uv/
+.conda/
+env/
+venv/
+ENV/
+
+# ---- Testing / Linting ----
+.pytest_cache/
+.coverage
+coverage.xml
+*.cover
+.hypothesis/
+.tox/
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+.pyre/
+.pyright/
+
+# ---- Notebooks / Checkpoints ----
 .ipynb_checkpoints/
-.git/
+notebooks/.ipynb_checkpoints/
+*.nbconvert.ipynb
+
+# ---- IDE / Editor ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*.bak
+*.tmp
+*.log
+
+# ---- Local Configuration ----
+.env
+.env.*
+*.secret
+secrets.json
+
+# ---- Data / Outputs ----
 data/
+datasets/
 models/
 experiments/
 results/
+outputs/
+logs/
 
-# Python cache
-*.pyc
-*.pyo
+# ---- Docker / Compose ----
+*.pid
+*.pid.lock
+*.tar
+docker-compose.override.yml
+docker-compose.local.yml
 
-# Local env
-.env
+# ---- Misc ----
+.DS_Store
+Thumbs.db
+__MACOSX/
+*.zip
+*.tar.gz
+
+# ---- Generated / Temporary ----
+.tmp/
+.cache/
+*.old
+*.orig
+*.rej
+
+# ---- System Files ----
+ehthumbs.db
+Desktop.ini
+Icon?
