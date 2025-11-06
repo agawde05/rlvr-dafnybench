@@ -4,8 +4,8 @@ This repository provides a **reproducible RL training and evaluation pipeline** 
 
 It is designed for **reproducibility**, **collaboration**, and **cross-platform development**.  
 Supports both:
-- **VS Code Dev Container workflow (recommended)** — for automatic, consistent environments  
-- **Local Development (not recommended)** — for debugging 
+- **VS Code Dev Container workflow (recommended)** - for automatic, consistent environments  
+- **Local Development (not recommended)** - for debugging 
 ---
 
 ## 📘 Table of Contents
@@ -140,7 +140,7 @@ When prompted:
 
 > "Reopen in Container"
 
-Click **Yes** — VS Code will:
+Click **Yes** - VS Code will:
 
 * Build the Docker image
 * Start the container with all dependencies
