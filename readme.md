@@ -7,7 +7,7 @@ A **reproducible RL training and evaluation pipeline** for the **DafnyBench** fo
 ## 🚀 Quick Start
 
 ```bash
-git clone https://github.com/<your-org-or-user>/rlvr-dafnybench.git
+git clone https://github.com/agawde05/rlvr-dafnybench.git
 cd rlvr-dafnybench
 code .
 ```

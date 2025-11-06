@@ -131,7 +131,7 @@ docker compose version
 ### 2. Open the Project
 
 ```bash
-git clone https://github.com/<your-org-or-user>/rlvr-dafnybench.git
+git clone https://github.com/agawde05/rlvr-dafnybench.git
 cd rlvr-dafnybench
 code .
 ```
@@ -268,7 +268,7 @@ Remove-Item -Recurse -Force .pytest_cache,.ruff_cache
 ## 🚀 Quick Start
 
 ```bash
-git clone https://github.com/<your-org-or-user>/rlvr-dafnybench.git
+git clone https://github.com/agawde05/rlvr-dafnybench.git
 cd rlvr-dafnybench
 code .
 
