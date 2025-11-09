@@ -1,3 +1,5 @@
+> **Collaborators:** see [docs/dev.readme.md](https://github.com/agawde05/rlvr-dafnybench/blob/master/docs/dev.readme.md) for detailed setup and info.
+
 # RLVR-DafnyBench: Reinforcement Learning from Verifiable Rewards on DafnyBench
 
 A **reproducible RL training and evaluation pipeline** for the **DafnyBench** formal verification benchmark, built with **uv** and **Docker**.
