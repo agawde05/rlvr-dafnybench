@@ -20,6 +20,7 @@ Supports both:
 6. [💡 Development Tips](#-development-tips)
 7. [🧩 System Requirements](#-system-requirements)
 8. [🚀 Quick Start](#-quick-start)
+9. [📘 GitHub Workflow](#-github-workflow)
 
 ---
 
@@ -279,3 +280,43 @@ uv run scripts/train_model.py
 uv run scripts/evaluate_model.py
 uv run pytest
 ```
+---
+
+## 📘 GitHub Workflow 
+
+**Always work on feature branches — never on `master`.**
+Each issue or feature = its own branch + PR.
+
+
+
+1. **Sync master**
+
+   ```bash
+   git checkout master
+   git pull origin master
+   ```
+2. **Create a branch**
+
+   ```bash
+   git checkout -b feat/<short-name>   # or fix/<short-name>
+   ```
+3. **Work, commit, push**
+
+   ```bash
+   git add .
+   git commit -m "Fix: <short summary> (Resolves #<issue-number>)"
+   git push -u origin feature/<short-name>
+   ```
+4. **Open a Pull Request**
+
+   * Target: `master`
+   * Description: include `Resolves #<issue-number>` to auto-close issue
+   * Wait for review
+   * Use **Squash and Merge**
+   * Delete branch after merge
+
+### 🚫 Don’t
+
+* Don’t push directly to `master`
+* Don’t mix unrelated changes in one branch
+* Don’t merge without review
