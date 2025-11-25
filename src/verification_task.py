@@ -1,3 +1,5 @@
+import re
+
 SYSTEM_MESSAGE = """You are an LLM specialized in formal verification. 
 Your task is to take existing Dafny code and produce a fully annotated version 
 that enables the Dafny verifier to prove total correctness.
@@ -53,3 +55,28 @@ Use <think> for chain-of-thought and <answer> for the final code.
 
 <think>
 """
+
+def format_reward_function(response: str) -> float:
+    """The reward function for whether the LLM output is correctly formatted.
+
+    Recall that the reward is 0.1 if the output is correctly formatted, and 0.0
+    otherwise. We will also give partial credit for partially correct
+    formatting, with an emphasis on having the answer tags correct.
+    """
+    think_regex = r"<think>(.*?)</think>"
+    answer_regex = r"<answer>(.*?)</answer>"
+    full_format = r"<think>(.*?)</think>\n<answer>(.*?)</answer>$"
+
+    match_think = re.search(think_regex, response, re.DOTALL)
+    match_answer = re.search(answer_regex, response, re.DOTALL)
+    match_full = re.search(full_format, response, re.DOTALL)
+
+    if match_full:
+        return 0.1
+    
+    reward = 0.0
+    if match_think:
+        reward += 0.01
+    if match_answer:
+        reward += 0.07
+    return reward
