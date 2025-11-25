@@ -1,18 +1,16 @@
-# scripts/get_data.py
-import time
+import datasets
+import polars as pl
 from pathlib import Path
-from tqdm import tqdm
 
-DATA_PATH = Path("data/DafnyBench")
+def load_dafnybench_data() -> pl.DataFrame:
+    """Loads the DafnyBench dataset into a polars DataFrame."""
+    ds = datasets.load_dataset("wendy-sun/DafnyBench")
+    return ds.with_format("polars")['test'][:] # type: ignore
 
+def save_dafnybench_data(data: pl.DataFrame, save_path: Path) -> None:
+    """Saves the DafnyBench dataset to a Parquet file."""
+    data.write_parquet(save_path, compression="zstd", compression_level=9)
 
-def main():
-    print("[data] Preparing mock DafnyBench dataset directory...")
-    DATA_PATH.mkdir(parents=True, exist_ok=True)
-    for _ in tqdm(range(5), desc="[data] Initializing", ncols=80):
-        time.sleep(0.2)
-    print(f"[data] Done. Directory ready at {DATA_PATH}/")
-
-
-if __name__ == "__main__":
-    main()
+def load_saved_dafnybench_data(load_path: Path) -> pl.DataFrame:
+    """Loads the DafnyBench dataset from a Parquet file."""
+    return pl.read_parquet(load_path)
