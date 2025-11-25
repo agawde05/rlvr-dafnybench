@@ -67,12 +67,13 @@ def format_reward_function(response: str) -> float:
     answer_regex = r"<answer>(.*?)</answer>"
     full_format = r"<think>(.*?)</think>\n<answer>(.*?)</answer>$"
 
-    match_think = re.search(think_regex, response, re.DOTALL)
-    match_answer = re.search(answer_regex, response, re.DOTALL)
     match_full = re.search(full_format, response, re.DOTALL)
 
     if match_full:
         return 0.1
+
+    match_think = re.search(think_regex, response, re.DOTALL)
+    match_answer = re.search(answer_regex, response, re.DOTALL)
     
     reward = 0.0
     if match_think:
