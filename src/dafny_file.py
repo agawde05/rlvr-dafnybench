@@ -40,7 +40,7 @@ class DafnyFile:
         self.code = code
     
     @staticmethod
-    def validate_no_assume(self, original: str, modified: str) -> bool:
+    def validate_no_assume(original: str, modified: str) -> bool:
         """Makes sure that the new code does not introduce any 'assume'
             statements that were not in the original code."""
         # find all lines with 'assume' in them, and make sure the lines are
