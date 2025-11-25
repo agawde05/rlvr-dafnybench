@@ -12,5 +12,8 @@ Our reward function is divided into three parts:
    inside the <answer> tags verifies successfully using the Dafny verifier,
    and 0 otherwise.
 
-3. Assumption Penalty: Our model incurs a -1 penalty if the final Dafny code
-   introduces any 'assume' statements that were not present in the original
+3. Assumption Reward: Our model incurs a -1 penalty if the final Dafny code
+   introduces any 'assume' statements that were not present in the original.
+   Otherwise, it gets a 0.5 reward.
+
+4. 

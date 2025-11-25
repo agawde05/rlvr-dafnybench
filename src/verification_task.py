@@ -1,4 +1,5 @@
 import re
+from dafny_file import DafnyFile, Dafny
 
 SYSTEM_MESSAGE = """You are an LLM specialized in formal verification. 
 Your task is to take existing Dafny code and produce a fully annotated version 
@@ -56,12 +57,16 @@ Use <think> for chain-of-thought and <answer> for the final code.
 <think>
 """
 
+FORMAT_WEIGHT = 0.1
+VERIFICATION_WEIGHT = 1.0
+ASSUMTION_WEIGHT = 1.0
+DELETION_WEIGHT = 1.0
+
+
 def format_reward_function(response: str) -> float:
     """The reward function for whether the LLM output is correctly formatted.
 
-    Recall that the reward is 0.1 if the output is correctly formatted, and 0.0
-    otherwise. We will also give partial credit for partially correct
-    formatting, with an emphasis on having the answer tags correct.
+    Returns a float between 0.0 and 1.0, where 1.0 indicates perfect formatting.
     """
     think_regex = r"<think>(.*?)</think>"
     answer_regex = r"<answer>(.*?)</answer>"
@@ -70,14 +75,49 @@ def format_reward_function(response: str) -> float:
     match_full = re.search(full_format, response, re.DOTALL)
 
     if match_full:
-        return 0.1
+        return 1.0
 
     match_think = re.search(think_regex, response, re.DOTALL)
     match_answer = re.search(answer_regex, response, re.DOTALL)
-    
+
     reward = 0.0
     if match_think:
-        reward += 0.01
+        reward += 0.1
     if match_answer:
-        reward += 0.07
+        reward += 0.7
     return reward
+
+
+def get_generated_dafny_code(response: str) -> DafnyFile:
+    """Extracts the generated Dafny code from the LLM response."""
+    answer_regex = r"<answer>(.*?)</answer>"
+    match_answer = re.search(answer_regex, response, re.DOTALL)
+    if not match_answer:
+        raise ValueError("No <answer> tags found in the response.")
+
+    generated_code = match_answer.group(1).strip()
+    return DafnyFile.from_code(generated_code)
+
+
+def assume_reward_function(original_code: str, modified_code: str) -> float:
+    """Reward function for whether no new 'assume' statements were introduced."""
+    no_additional_assume = DafnyFile.validate_no_assume(original_code, modified_code)
+    if no_additional_assume:
+        return 0.2
+    return -1.0
+
+
+def deletion_reward_function(original_code: str, modified_code: str) -> float:
+    """Reward function for whether code deletion occurred."""
+    no_deletion = DafnyFile.validate_no_deletion(original_code, modified_code)
+    if no_deletion:
+        return 0.2
+    return -1.0
+
+
+def verification_reward_function(dafny_file: DafnyFile, dafny: Dafny) -> float:
+    """Reward function for whether the modified Dafny code verifies."""
+    verifies = dafny.verify(dafny_file)
+    if verifies:
+        return 1.0
+    return 0.0
