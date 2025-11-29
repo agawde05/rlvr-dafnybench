@@ -9,14 +9,16 @@ DEFAULT_SAVE_PATH = Path(__file__).resolve().parents[1] / "data" / "DafnyBench" 
 def load_dafnybench_data(split: str = "test") -> pl.DataFrame:
     """Loads the DafnyBench dataset into a polars DataFrame."""
     ds = datasets.load_dataset("wendy-sun/DafnyBench")
-    table = ds[split].with_format("polars")[:]  # type: ignore
+    table = ds[split].with_format("polars")[:]  
     df = pl.DataFrame(table)
+    # normalize columns to a consistent schema we use elsewhere.
     rename_map = {
         "hints_removed": "body",
         "ground_truth": "annotated_body",
         "file_name": "id",
         "filename": "id",
     }
+    # rename columns if needed
     for old, new in rename_map.items():
         if old in df.columns and new not in df.columns:
             df = df.rename({old: new})

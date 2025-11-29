@@ -93,3 +93,6 @@ __MACOSX/
 ehthumbs.db
 Desktop.ini
 Icon?
+
+# Dafny artifacts
+*.dfy
