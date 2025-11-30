@@ -84,7 +84,7 @@ class Dafny:
     def __init__(self, dafny_path: Path):
         self.dafny_path = dafny_path
 
-    def verify(self, dafny_file: DafnyFile) -> bool:
+    def verify(self, dafny_file: DafnyFile, timeout_seconds: int = 30) -> bool:
         """Verifies the Dafny File using the Dafny verifier.
 
         TODO: determine if we should return Dafny output as well as a bool.
@@ -98,13 +98,28 @@ class Dafny:
             f.write(code)
             f.flush()
 
-            # run the Dafny verifier
-            proc = subprocess.run(
-                [str(self.dafny_path), "verify", str(f.name)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
+            try:
+                # run the Dafny verifier
+                proc = subprocess.run(
+                    [
+                        str(self.dafny_path),
+                        "verify",
+                        str(f.name),
+                        "--verification-time-limit",
+                        str(timeout_seconds),
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=timeout_seconds + 5,
+                )
 
-        print(proc.stdout)
-        return proc.returncode == 0
+                print(proc.stdout)
+                return proc.returncode == 0
+
+            except subprocess.TimeoutExpired:
+                print(f"Dafny verification timed out after {timeout_seconds} seconds")
+                return False
+            except Exception as e:
+                print(f"Error during Dafny verification: {e}")
+                return False
