@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import Any, List, Dict
 
 type Tokens = List[str]
 type TokenIds = List[int]
@@ -15,7 +15,7 @@ class Response:
     generated_token_ids: TokenIds  # Generated tokens only
     is_complete: bool  # Whether generation finished naturally
     reward: float  # Scalar reward (normalized during training)
-    reward_components: Dict[str, float]  # Breakdown for logging
+    reward_components: Dict[str, Any]  # Breakdown for logging and failure reasons
 
 
 @dataclass
