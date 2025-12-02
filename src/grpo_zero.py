@@ -76,7 +76,7 @@ def sample_questions(
     # Note: prompt_tokens is left empty as it's redundant (can be reconstructed from token_ids if needed)
     return Minibatch(
         prompts=sampled_prompts,
-        prompt_tokens=[], # for debugging, can be filled if needed
+        prompt_tokens=[],  # for debugging, can be filled if needed
         prompt_token_ids=prompt_token_ids_list,
     )
 
@@ -144,11 +144,10 @@ def rollout_batch(
         - Breaks early when all sequences in batch have finished.
         - Reward computation is environment-based (verification task).
     """
-    pass
 
 
 def replicate_prompts(
-    prompt_token_ids: List[TokenIds], group_size: int
+    prompt_token_ids: List[TokenIds], group_size: int, pad_token_id: int = 0
 ) -> torch.Tensor:
     """
     Replicate each prompt G times for group sampling.
@@ -156,6 +155,7 @@ def replicate_prompts(
     Args:
         prompt_token_ids: List of B token ID lists, one per question.
         group_size: Number of times to replicate each prompt (G).
+        pad_token_id: Token ID to use for padding (default: 0).
 
     Returns:
         Tensor of shape [B*G, max_prompt_len] containing padded and
@@ -175,7 +175,23 @@ def replicate_prompts(
         - Padding token should be tokenizer.pad_token_id.
         - Replication is consecutive to maintain group structure.
     """
-    pass
+    B = len(prompt_token_ids)
+
+    # Edge case: empty list
+    if B == 0:
+        return torch.empty(0, 0, dtype=torch.long)
+
+    # Find maximum prompt length
+    max_prompt_len = max(len(ids) for ids in prompt_token_ids)
+
+    # Create padded tensor [B, max_prompt_len]
+    padded = torch.full((B, max_prompt_len), pad_token_id, dtype=torch.long)
+    for i, ids in enumerate(prompt_token_ids):
+        padded[i, : len(ids)] = torch.tensor(ids, dtype=torch.long)
+
+    # Replicate each prompt G times consecutively using repeat_interleave
+    # [p1, p2, p3] -> [p1, p1, ..., p1, p2, p2, ..., p2, p3, p3, ..., p3]
+    return padded.repeat_interleave(group_size, dim=0)
 
 
 def autoregressive_decode_step(
@@ -225,7 +241,37 @@ def autoregressive_decode_step(
         - Temperature < 1: more deterministic, > 1: more random.
         - Top-p filters out low-probability tokens before sampling.
     """
-    pass
+    # Forward pass through model
+    with torch.no_grad():
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            past_key_values=past_key_values,
+            use_cache=True,
+        )
+
+    # Extract logits and updated KV cache
+    logits = outputs.logits  # [B*G, seq_len, vocab_size]
+    updated_past_key_values = outputs.past_key_values
+
+    # Get logits for the last position (next token prediction)
+    next_token_logits = logits[:, -1, :]  # [B*G, vocab_size]
+
+    # Apply temperature scaling
+    if temperature != 1.0:
+        next_token_logits = next_token_logits / temperature
+
+    # Apply top-p filtering
+    if top_p < 1.0:
+        next_token_logits = apply_top_p_filtering(next_token_logits, top_p)
+
+    # Convert to probabilities
+    probs = F.softmax(next_token_logits, dim=-1)  # [B*G, vocab_size]
+
+    # Sample from the distribution
+    next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)  # [B*G]
+
+    return next_tokens, updated_past_key_values
 
 
 def apply_top_p_filtering(logits: torch.Tensor, top_p: float) -> torch.Tensor:
@@ -248,16 +294,55 @@ def apply_top_p_filtering(logits: torch.Tensor, top_p: float) -> torch.Tensor:
         5. Return filtered logits
 
     Mathematical Definition:
-        Let À(v|s) be the probability of token v given state s.
-        Sort tokens by À(v|s) in descending order: v_1, v_2, ...
-        Find smallest k such that £_{i=1}^k À(v_i|s) e top_p
+        Let π(v|s) be the probability of token v given state s.
+        Sort tokens by π(v|s) in descending order: v_1, v_2, ...
+        Find smallest k such that sum_{i=1}^k π(v_i|s) >= top_p
         Keep only v_1, ..., v_k; set others to -inf
 
     Notes:
         - Setting to -inf ensures these tokens have 0 probability after softmax.
         - Prevents sampling from the long tail of unlikely tokens.
+
+    TODO: Performance optimizations if needed:
+        1. Top-k pre-filtering: First filter to top-k tokens (e.g., k=1000) before
+           applying top-p. This reduces sorting from O(V log V) to O(k log k) where
+           k << V. Can provide ~50x speedup for large vocabularies.
+
+        2. Skip when top_p >= 1.0: Add early return to avoid expensive operations
+           when no filtering is actually needed.
+
+        3. Use HuggingFace's TopPLogitsWarper: Battle-tested, highly optimized
+           implementation with additional optimizations.
+
+        Current implementation is adequate for typical use (batch_size * group_size < 128,
+        vocab_size ~50k). Top-p filtering takes ~1-2ms vs ~50-200ms for model forward
+        pass, so it's not the bottleneck.
     """
-    pass
+    # Sort logits in descending order
+    sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
+    sorted_probs = F.softmax(sorted_logits, dim=-1)
+    cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+
+    # Find indices where cumulative probability exceeds top_p
+    # We want to remove tokens where cumulative_prob > top_p
+    # Shift right by 1 to keep at least the first token (highest prob)
+    sorted_indices_to_remove = cumulative_probs > top_p
+    sorted_indices_to_remove = torch.roll(sorted_indices_to_remove, shifts=1, dims=-1)
+    sorted_indices_to_remove[..., 0] = False
+
+    # Create a copy of logits to avoid in-place modification issues
+    filtered_logits = logits.clone()
+
+    # Vectorized scatter: map removal mask back to original indices
+    filtered_logits.scatter_(
+        -1,
+        sorted_indices,
+        logits.gather(-1, sorted_indices).masked_fill(
+            sorted_indices_to_remove, float("-inf")
+        ),
+    )
+
+    return filtered_logits
 
 
 # ============================================================================
