@@ -22,119 +22,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Optimizer
 from transformers import PreTrainedModel, PreTrainedTokenizer
-import copy
+import random
 
-from data_types import Response, Minibatch, TokenIds
-
-
-# ============================================================================
-# Configuration
-# ============================================================================
-
-
-@dataclass
-class GrpoConfig:
-    """Configuration for GRPO-Zero training. Inline metadata documents each field."""
-
-    # Sampling parameters
-    group_size: int = field(
-        default=8,
-        metadata={"help": "Completions sampled per question (G) for group-relative reward normalization."},
-    )
-    max_new_tokens: int = field(
-        default=512,
-        metadata={"help": "Maximum number of tokens to generate per completion."},
-    )
-    temperature: float = field(
-        default=0.8,
-        metadata={"help": "Sampling temperature; higher values increase randomness."},
-    )
-    top_p: float = field(
-        default=0.95,
-        metadata={"help": "Nucleus sampling cutoff; sample from tokens whose cumulative probability <= top_p."},
-    )
-
-    # Training parameters
-    learning_rate: float = field(
-        default=1e-5,
-        metadata={"help": "Learning rate for the policy optimizer."},
-    )
-    batch_size: int = field(
-        default=8,
-        metadata={"help": "Number of questions per training batch."},
-    )
-    gradient_accumulation_steps: int = field(
-        default=4,
-        metadata={"help": "Micro-batches to accumulate before each optimizer step."},
-    )
-    max_grad_norm: float = field(
-        default=1.0,
-        metadata={"help": "Maximum gradient norm for clipping to stabilize training."},
-    )
-    num_ppo_epochs: int = field(
-        default=2,
-        metadata={"help": "Number of epochs to train on each batch of collected rollouts."},
-    )
-
-    # PPO/GRPO hyperparameters
-    clip_ratio: float = field(
-        default=0.2,
-        metadata={"help": "PPO clipping parameter epsilon; limits policy update magnitude."},
-    )
-    kl_coef: float = field(
-        default=0.05,
-        metadata={"help": "Coefficient for KL penalty against the reference model to prevent drift."},
-    )
-    entropy_coef: float = field(
-        default=0.01,
-        metadata={"help": "Entropy bonus coefficient encouraging exploration during training."},
-    )
-    value_loss_coef: float = field(
-        default=0.0,
-        metadata={"help": "Value loss weight (unused in GRPO-Zero but kept for extensibility)."},
-    )
-
-    # Reward normalization
-    reward_norm_eps: float = field(
-        default=1e-8,
-        metadata={"help": "Epsilon for numerical stability in group-relative reward normalization."},
-    )
-    advantage_whitening: bool = field(
-        default=True,
-        metadata={"help": "Whether to whiten advantages across the full batch after group normalization."},
-    )
-
-    # Model management
-    ref_update_freq: int = field(
-        default=100,
-        metadata={"help": "Steps between syncing reference model with current policy; 0 disables updates."},
-    )
-    old_update_freq: int = field(
-        default=1,
-        metadata={"help": "Steps between updating the old policy snapshot used for importance sampling."},
-    )
-
-    # Checkpointing
-    checkpoint_freq: int = field(
-        default=100,
-        metadata={"help": "Steps between saving model checkpoints."},
-    )
-
-    # Logging
-    log_freq: int = field(
-        default=10,
-        metadata={"help": "Steps between metric logging."},
-    )
-
-    # Device and precision
-    device: str = field(
-        default='cuda',
-        metadata={"help": "Execution device for training (e.g., 'cuda' or 'cpu')."},
-    )
-    mixed_precision: bool = field(
-        default=True,
-        metadata={"help": "Enable mixed precision (fp16) training when supported."},
-    )
+from data_types import Response, Minibatch, TokenIds, GrpoConfig
 
 
 # ============================================================================
@@ -143,9 +33,7 @@ class GrpoConfig:
 
 
 def sample_questions(
-    dataset: List[str],
-    batch_size: int,
-    tokenizer: PreTrainedTokenizer
+    dataset: List[str], batch_size: int, tokenizer: PreTrainedTokenizer
 ) -> Minibatch:
     """
     Sample a batch of questions from the dataset.
@@ -169,7 +57,28 @@ def sample_questions(
         - Sampling is uniform random without replacement within a batch.
         - Questions are tokenized but not padded yet (that happens in rollout).
     """
-    pass
+
+    # Sample batch_size questions uniformly at random without replacement
+    sampled_prompts = random.sample(dataset, min(batch_size, len(dataset)))
+
+    # Tokenize each prompt
+    prompt_token_ids_list = []
+
+    for prompt in sampled_prompts:
+        # Tokenize the prompt
+        encoded = tokenizer(prompt, add_special_tokens=True, return_tensors=None)
+
+        # Get token IDs as a list
+        token_ids = encoded["input_ids"]
+        prompt_token_ids_list.append(token_ids)
+
+    # Create and return Minibatch
+    # Note: prompt_tokens is left empty as it's redundant (can be reconstructed from token_ids if needed)
+    return Minibatch(
+        prompts=sampled_prompts,
+        prompt_tokens=[], # for debugging, can be filled if needed
+        prompt_token_ids=prompt_token_ids_list,
+    )
 
 
 def rollout_batch(
@@ -177,7 +86,7 @@ def rollout_batch(
     minibatch: Minibatch,
     config: GrpoConfig,
     tokenizer: PreTrainedTokenizer,
-    reward_fn: callable
+    reward_fn: callable,
 ) -> List[Response]:
     """
     Perform batched autoregressive rollout to generate completions.
@@ -239,8 +148,7 @@ def rollout_batch(
 
 
 def replicate_prompts(
-    prompt_token_ids: List[TokenIds],
-    group_size: int
+    prompt_token_ids: List[TokenIds], group_size: int
 ) -> torch.Tensor:
     """
     Replicate each prompt G times for group sampling.
@@ -277,7 +185,7 @@ def autoregressive_decode_step(
     past_key_values: Optional[Tuple],
     temperature: float,
     top_p: float,
-    eos_token_id: int
+    eos_token_id: int,
 ) -> Tuple[torch.Tensor, Tuple]:
     """
     Perform a single autoregressive decoding step with KV caching.
@@ -320,10 +228,7 @@ def autoregressive_decode_step(
     pass
 
 
-def apply_top_p_filtering(
-    logits: torch.Tensor,
-    top_p: float
-) -> torch.Tensor:
+def apply_top_p_filtering(logits: torch.Tensor, top_p: float) -> torch.Tensor:
     """
     Apply nucleus (top-p) sampling filter to logits.
 
@@ -361,9 +266,7 @@ def apply_top_p_filtering(
 
 
 def normalize_rewards_per_group(
-    responses: List[Response],
-    group_size: int,
-    eps: float = 1e-8
+    responses: List[Response], group_size: int, eps: float = 1e-8
 ) -> List[float]:
     """
     Normalize rewards using group-relative statistics.
@@ -405,10 +308,7 @@ def normalize_rewards_per_group(
     pass
 
 
-def whiten_advantages(
-    advantages: torch.Tensor,
-    eps: float = 1e-8
-) -> torch.Tensor:
+def whiten_advantages(advantages: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     """
     Whiten advantages across entire batch for additional stability.
 
@@ -476,7 +376,7 @@ def build_policy_batches(
     normalized_rewards: List[float],
     old_model: PreTrainedModel,
     tokenizer: PreTrainedTokenizer,
-    micro_batch_size: int
+    micro_batch_size: int,
 ) -> List[PolicyBatch]:
     """
     Convert responses into batches suitable for policy gradient computation.
@@ -528,7 +428,7 @@ def compute_old_log_probs(
     model: PreTrainedModel,
     input_ids: torch.Tensor,
     attention_mask: torch.Tensor,
-    target_mask: torch.Tensor
+    target_mask: torch.Tensor,
 ) -> torch.Tensor:
     """
     Compute per-token log probabilities under the old policy À_old.
@@ -586,7 +486,7 @@ def compute_policy_log_probs(
     model: PreTrainedModel,
     input_ids: torch.Tensor,
     attention_mask: torch.Tensor,
-    target_mask: torch.Tensor
+    target_mask: torch.Tensor,
 ) -> torch.Tensor:
     """
     Compute per-token log probabilities under current policy À_¸.
@@ -621,7 +521,7 @@ def compute_reference_log_probs(
     ref_model: PreTrainedModel,
     input_ids: torch.Tensor,
     attention_mask: torch.Tensor,
-    target_mask: torch.Tensor
+    target_mask: torch.Tensor,
 ) -> torch.Tensor:
     """
     Compute per-token log probabilities under frozen reference model À_ref.
@@ -653,10 +553,7 @@ def compute_reference_log_probs(
     pass
 
 
-def compute_entropy(
-    logits: torch.Tensor,
-    target_mask: torch.Tensor
-) -> torch.Tensor:
+def compute_entropy(logits: torch.Tensor, target_mask: torch.Tensor) -> torch.Tensor:
     """
     Compute per-token entropy of the policy distribution.
 
@@ -714,7 +611,7 @@ def compute_grpo_loss(
     ref_log_probs: torch.Tensor,
     advantages: torch.Tensor,
     target_mask: torch.Tensor,
-    config: GrpoConfig
+    config: GrpoConfig,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
     Compute GRPO-Zero loss with PPO-style clipping and KL penalty.
@@ -826,7 +723,7 @@ def update_policy(
     ref_model: PreTrainedModel,
     optimizer: Optimizer,
     policy_batches: List[PolicyBatch],
-    config: GrpoConfig
+    config: GrpoConfig,
 ) -> Dict[str, float]:
     """
     Perform policy update using collected rollouts.
@@ -903,10 +800,7 @@ def update_policy(
     pass
 
 
-def clip_gradients(
-    model: nn.Module,
-    max_norm: float
-) -> float:
+def clip_gradients(model: nn.Module, max_norm: float) -> float:
     """
     Clip gradients by global norm.
 
@@ -938,7 +832,7 @@ def train_step(
     tokenizer: PreTrainedTokenizer,
     reward_fn: callable,
     config: GrpoConfig,
-    step: int
+    step: int,
 ) -> Dict[str, Any]:
     """
     Execute one full training step of GRPO-Zero.
@@ -1000,7 +894,7 @@ def train_loop(
     reward_fn: callable,
     config: GrpoConfig,
     num_steps: int,
-    checkpoint_dir: str
+    checkpoint_dir: str,
 ) -> None:
     """
     Main training loop for GRPO-Zero.
@@ -1089,7 +983,9 @@ def update_old_model(policy_model: PreTrainedModel, old_model: PreTrainedModel) 
     pass
 
 
-def update_reference_model(policy_model: PreTrainedModel, ref_model: PreTrainedModel) -> None:
+def update_reference_model(
+    policy_model: PreTrainedModel, ref_model: PreTrainedModel
+) -> None:
     """
     Update reference model by copying parameters from policy model.
 
@@ -1106,10 +1002,7 @@ def update_reference_model(policy_model: PreTrainedModel, ref_model: PreTrainedM
 
 
 def save_checkpoint(
-    policy_model: PreTrainedModel,
-    optimizer: Optimizer,
-    step: int,
-    checkpoint_dir: str
+    policy_model: PreTrainedModel, optimizer: Optimizer, step: int, checkpoint_dir: str
 ) -> None:
     """
     Save model checkpoint.
@@ -1129,9 +1022,7 @@ def save_checkpoint(
 
 
 def load_checkpoint(
-    checkpoint_path: str,
-    policy_model: PreTrainedModel,
-    optimizer: Optimizer
+    checkpoint_path: str, policy_model: PreTrainedModel, optimizer: Optimizer
 ) -> int:
     """
     Load model checkpoint.
