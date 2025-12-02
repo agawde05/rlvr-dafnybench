@@ -9,13 +9,15 @@ import sys
 from pathlib import Path
 
 import pytest
+import torch
+import torch.nn.functional as F
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.append(str(SRC_DIR))
 
-from grpo_zero import sample_questions  # noqa: E402
+import grpo_zero as grpo  # noqa: E402
 from data_types import Minibatch  # noqa: E402
 
 
@@ -75,6 +77,44 @@ class MockTokenizer:
         return [self.reverse_vocab.get(tid, "<unk>") for tid in token_ids]
 
 
+class DummyOutput:
+    """Simple container mirroring HuggingFace output fields used in tests."""
+
+    def __init__(self, logits, past_key_values):
+        self.logits = logits
+        self.past_key_values = past_key_values
+
+
+class DummyModel:
+    """Minimal causal LM stub that returns fixed logits and tracks calls."""
+
+    def __init__(self, base_logits, past_to_return=("cached",)):
+        self.base_logits = torch.tensor(base_logits, dtype=torch.float)
+        self.past_to_return = past_to_return
+        self.calls = []
+
+    def __call__(
+        self, input_ids, attention_mask=None, past_key_values=None, use_cache=True
+    ):
+        self.calls.append(
+            {
+                "input_ids": input_ids.clone(),
+                "attention_mask": attention_mask.clone()
+                if attention_mask is not None
+                else None,
+                "past_key_values": past_key_values,
+                "use_cache": use_cache,
+            }
+        )
+        batch_size, seq_len = input_ids.shape
+        logits = (
+            self.base_logits.view(1, 1, -1)
+            .expand(batch_size, seq_len, -1)
+            .clone()
+        )
+        return DummyOutput(logits=logits, past_key_values=self.past_to_return)
+
+
 ###################################
 # Test cases for sample_questions #
 ###################################
@@ -85,7 +125,7 @@ def test_sample_questions_returns_minibatch():
     tokenizer = MockTokenizer()
     batch_size = 2
 
-    result = sample_questions(dataset, batch_size, tokenizer)
+    result = grpo.sample_questions(dataset, batch_size, tokenizer)
 
     assert isinstance(result, Minibatch)
     assert hasattr(result, "prompts")
@@ -99,7 +139,7 @@ def test_sample_questions_correct_batch_size():
     tokenizer = MockTokenizer()
     batch_size = 2
 
-    result = sample_questions(dataset, batch_size, tokenizer)
+    result = grpo.sample_questions(dataset, batch_size, tokenizer)
 
     assert len(result.prompts) == batch_size
     assert len(result.prompt_token_ids) == batch_size
@@ -111,7 +151,7 @@ def test_sample_questions_handles_small_dataset():
     tokenizer = MockTokenizer()
     batch_size = 5  # Larger than dataset
 
-    result = sample_questions(dataset, batch_size, tokenizer)
+    result = grpo.sample_questions(dataset, batch_size, tokenizer)
 
     # Should return all available samples
     assert len(result.prompts) == len(dataset)
@@ -124,7 +164,7 @@ def test_sample_questions_samples_from_dataset():
     tokenizer = MockTokenizer()
     batch_size = 2
 
-    result = sample_questions(dataset, batch_size, tokenizer)
+    result = grpo.sample_questions(dataset, batch_size, tokenizer)
 
     # All sampled prompts should be in the original dataset
     for prompt in result.prompts:
@@ -137,7 +177,7 @@ def test_sample_questions_no_duplicates_within_batch():
     tokenizer = MockTokenizer()
     batch_size = 3
 
-    result = sample_questions(dataset, batch_size, tokenizer)
+    result = grpo.sample_questions(dataset, batch_size, tokenizer)
 
     # No duplicates within the batch (sampling without replacement)
     assert len(result.prompts) == len(set(result.prompts))
@@ -149,7 +189,7 @@ def test_sample_questions_tokenizes_correctly():
     tokenizer = MockTokenizer()
     batch_size = 1
 
-    result = sample_questions(dataset, batch_size, tokenizer)
+    result = grpo.sample_questions(dataset, batch_size, tokenizer)
 
     # Check that tokenization includes special tokens
     token_ids = result.prompt_token_ids[0]
@@ -166,7 +206,7 @@ def test_sample_questions_token_ids_are_lists():
     tokenizer = MockTokenizer()
     batch_size = 2
 
-    result = sample_questions(dataset, batch_size, tokenizer)
+    result = grpo.sample_questions(dataset, batch_size, tokenizer)
 
     # Token IDs should be lists
     for token_ids in result.prompt_token_ids:
@@ -180,7 +220,7 @@ def test_sample_questions_prompt_tokens_empty():
     tokenizer = MockTokenizer()
     batch_size = 2
 
-    result = sample_questions(dataset, batch_size, tokenizer)
+    result = grpo.sample_questions(dataset, batch_size, tokenizer)
 
     # prompt_tokens should be empty as per implementation
     assert result.prompt_tokens == []
@@ -195,7 +235,7 @@ def test_sample_questions_randomness():
     # Sample multiple times and check we get different results
     samples = []
     for _ in range(5):
-        result = sample_questions(dataset, batch_size, tokenizer)
+        result = grpo.sample_questions(dataset, batch_size, tokenizer)
         samples.append(tuple(result.prompts))
 
     # With high probability, we should get at least 2 different samples
@@ -210,7 +250,7 @@ def test_sample_questions_handles_single_question():
     tokenizer = MockTokenizer()
     batch_size = 1
 
-    result = sample_questions(dataset, batch_size, tokenizer)
+    result = grpo.sample_questions(dataset, batch_size, tokenizer)
 
     assert len(result.prompts) == 1
     assert result.prompts[0] == "hello world"
@@ -226,7 +266,7 @@ def test_sample_questions_preserves_original_text():
 
     # Run multiple times to ensure we eventually sample the first one
     for _ in range(10):
-        result = sample_questions(dataset, batch_size, tokenizer)
+        result = grpo.sample_questions(dataset, batch_size, tokenizer)
         if result.prompts[0] == original_prompt:
             # Found it - text is preserved exactly
             assert result.prompts[0] == original_prompt
@@ -239,7 +279,7 @@ def test_sample_questions_with_empty_dataset():
     tokenizer = MockTokenizer()
     batch_size = 2
 
-    result = sample_questions(dataset, batch_size, tokenizer)
+    result = grpo.sample_questions(dataset, batch_size, tokenizer)
 
     # Should return empty minibatch
     assert len(result.prompts) == 0
@@ -252,7 +292,7 @@ def test_sample_questions_token_id_lengths_match_text():
     tokenizer = MockTokenizer()
     batch_size = 3
 
-    result = sample_questions(dataset, batch_size, tokenizer)
+    result = grpo.sample_questions(dataset, batch_size, tokenizer)
 
     # Each prompt should have token IDs
     for i, prompt in enumerate(result.prompts):
@@ -270,7 +310,7 @@ def test_sample_questions_exact_token_ids():
     tokenizer = MockTokenizer()
     batch_size = 1
 
-    result = sample_questions(dataset, batch_size, tokenizer)
+    result = grpo.sample_questions(dataset, batch_size, tokenizer)
 
     token_ids = result.prompt_token_ids[0]
     # Expected: <bos>(2), "hello"(3), "world"(4), <eos>(1)
@@ -283,7 +323,7 @@ def test_sample_questions_preserves_token_order():
     tokenizer = MockTokenizer()
     batch_size = 1
 
-    result = sample_questions(dataset, batch_size, tokenizer)
+    result = grpo.sample_questions(dataset, batch_size, tokenizer)
 
     token_ids = result.prompt_token_ids[0]
     # Expected: <bos>(2), "how"(5), "are"(6), "you"(7), <eos>(1)
@@ -300,7 +340,7 @@ def test_sample_questions_multiple_prompts_have_correct_tokens():
     tokenizer = MockTokenizer()
     batch_size = 2
 
-    result = sample_questions(dataset, batch_size, tokenizer)
+    result = grpo.sample_questions(dataset, batch_size, tokenizer)
 
     # Map prompts to expected token IDs
     expected_tokens = {
@@ -322,7 +362,7 @@ def test_sample_questions_tokens_are_unmodified_by_sampling():
     tokenizations = {}
 
     for _ in range(5):
-        result = sample_questions(dataset, batch_size=2, tokenizer=tokenizer)
+        result = grpo.sample_questions(dataset, batch_size=2, tokenizer=tokenizer)
 
         for i, prompt in enumerate(result.prompts):
             token_ids = tuple(result.prompt_token_ids[i])  # Convert to tuple for hashing
@@ -344,7 +384,7 @@ def test_sample_questions_special_tokens_always_present():
     tokenizer = MockTokenizer()
     batch_size = 3
 
-    result = sample_questions(dataset, batch_size, tokenizer)
+    result = grpo.sample_questions(dataset, batch_size, tokenizer)
 
     for i, prompt in enumerate(result.prompts):
         token_ids = result.prompt_token_ids[i]
@@ -368,7 +408,7 @@ def test_sample_questions_token_ids_roundtrip():
     tokenizer = MockTokenizer()
     batch_size = 2
 
-    result = sample_questions(dataset, batch_size, tokenizer)
+    result = grpo.sample_questions(dataset, batch_size, tokenizer)
 
     for i, original_prompt in enumerate(result.prompts):
         token_ids = result.prompt_token_ids[i]
@@ -378,3 +418,207 @@ def test_sample_questions_token_ids_roundtrip():
 
         # Should match original (accounting for case normalization in mock tokenizer)
         assert decoded.lower() == original_prompt.lower()
+
+
+#####################################
+# Test cases for replicate_prompts  #
+#####################################
+
+def test_replicate_prompts_pads_and_repeats():
+    """Replicated prompts should be padded to max length and grouped."""
+    prompt_token_ids = [[2, 3, 4], [5]]
+
+    result = grpo.replicate_prompts(prompt_token_ids, group_size=2, pad_token_id=0)
+
+    expected = torch.tensor(
+        [
+            [2, 3, 4],
+            [2, 3, 4],
+            [5, 0, 0],
+            [5, 0, 0],
+        ],
+        dtype=torch.long,
+    )
+
+    assert result.shape == expected.shape
+    assert result.dtype == torch.long
+    assert torch.equal(result, expected)
+
+
+def test_replicate_prompts_handles_empty_list():
+    """Empty input should return an empty long tensor with proper shape."""
+    result = grpo.replicate_prompts([], group_size=3, pad_token_id=0)
+
+    assert result.shape == (0, 0)
+    assert result.dtype == torch.long
+    assert result.numel() == 0
+
+
+def test_replicate_prompts_group_size_one_preserves_order_and_padding():
+    """Group size of 1 should simply pad to max length without extra copies."""
+    prompt_token_ids = [[1, 2], [3, 4, 5]]
+
+    result = grpo.replicate_prompts(prompt_token_ids, group_size=1, pad_token_id=0)
+
+    expected = torch.tensor(
+        [
+            [1, 2, 0],
+            [3, 4, 5],
+        ],
+        dtype=torch.long,
+    )
+
+    assert torch.equal(result, expected)
+
+
+def test_replicate_prompts_respects_custom_pad_token():
+    """Pads with the provided pad token id instead of assuming zero."""
+    prompt_token_ids = [[4], [6, 7]]
+
+    result = grpo.replicate_prompts(prompt_token_ids, group_size=2, pad_token_id=9)
+
+    expected = torch.tensor(
+        [
+            [4, 9],
+            [4, 9],
+            [6, 7],
+            [6, 7],
+        ],
+        dtype=torch.long,
+    )
+
+    assert torch.equal(result, expected)
+
+
+def test_replicate_prompts_repeat_order_is_grouped():
+    """Replicated prompts should stay grouped per original prompt."""
+    prompt_token_ids = [[10], [20], [30]]
+
+    result = grpo.replicate_prompts(prompt_token_ids, group_size=2, pad_token_id=0)
+
+    expected = torch.tensor(
+        [
+            [10],
+            [10],
+            [20],
+            [20],
+            [30],
+            [30],
+        ],
+        dtype=torch.long,
+    )
+
+    assert torch.equal(result, expected)
+
+def test_replicate_prompts_single_prompt_multiple_groups():
+    """A single prompt should be replicated correctly for multiple groups."""
+    prompt_token_ids = [[1, 2, 3]]
+
+    result = grpo.replicate_prompts(prompt_token_ids, group_size=4, pad_token_id=0)
+
+    expected = torch.tensor(
+        [
+            [1, 2, 3],
+            [1, 2, 3],
+            [1, 2, 3],
+            [1, 2, 3],
+        ],
+        dtype=torch.long,
+    )
+
+    assert torch.equal(result, expected)
+
+
+#########################################
+# Test cases for apply_top_p_filtering  #
+#########################################
+
+def test_apply_top_p_filtering_removes_tail_tokens():
+    """Low-probability tokens beyond cumulative top_p should be masked out."""
+    logits = torch.tensor([[2.0, 1.0, 0.0]])
+
+    filtered = grpo.apply_top_p_filtering(logits, top_p=0.6)
+
+    # Original logits should remain unchanged
+    assert torch.equal(logits, torch.tensor([[2.0, 1.0, 0.0]]))
+    assert torch.isfinite(filtered[0, 0])
+    assert torch.isneginf(filtered[0, 1])
+    assert torch.isneginf(filtered[0, 2])
+
+    # After masking, probability mass collapses to the top token
+    probs = torch.softmax(filtered, dim=-1)
+    assert torch.allclose(probs, torch.tensor([[1.0, 0.0, 0.0]]))
+
+
+def test_apply_top_p_filtering_no_change_when_top_p_one():
+    """top_p=1.0 should leave logits untouched."""
+    logits = torch.tensor([[0.2, -0.1, 0.7]])
+
+    filtered = grpo.apply_top_p_filtering(logits, top_p=1.0)
+
+    torch.testing.assert_close(filtered, logits)
+
+
+##############################################
+# Test cases for autoregressive_decode_step  #
+##############################################
+
+def test_autoregressive_decode_step_applies_temperature(monkeypatch):
+    """Probability distribution should reflect temperature-scaled logits."""
+    model = DummyModel(base_logits=[0.0, 1.0, 2.0])
+    input_ids = torch.tensor([[3, 4], [5, 6]])
+    attention_mask = torch.ones_like(input_ids)
+    captured = {}
+
+    def fake_multinomial(probs, num_samples=1, replacement=False):
+        captured["probs"] = probs
+        # Deterministically pick the argmax to avoid randomness in the test
+        return torch.argmax(probs, dim=-1, keepdim=True)
+
+    monkeypatch.setattr(torch, "multinomial", fake_multinomial)
+
+    next_tokens, _ = grpo.autoregressive_decode_step(
+        model=model,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        past_key_values=None,
+        temperature=2.0,
+        top_p=1.0,
+        eos_token_id=1,
+    )
+
+    expected_logits = torch.tensor([0.0, 0.5, 1.0])
+    expected_probs = F.softmax(expected_logits, dim=-1).expand(2, -1)
+
+    assert torch.allclose(captured["probs"], expected_probs)
+    assert torch.equal(next_tokens, torch.tensor([2, 2]))
+
+
+def test_autoregressive_decode_step_respects_top_p_and_cache(monkeypatch):
+    """top-p filtering should zero out tail tokens and return model cache."""
+    model = DummyModel(base_logits=[5.0, 1.0, 0.0], past_to_return=("new_cache",))
+    input_ids = torch.tensor([[7, 8]])
+    attention_mask = torch.ones_like(input_ids)
+    captured = {}
+
+    def fake_multinomial(probs, num_samples=1, replacement=False):
+        captured["probs"] = probs
+        return torch.zeros(probs.shape[0], 1, dtype=torch.long)
+
+    monkeypatch.setattr(torch, "multinomial", fake_multinomial)
+
+    next_tokens, returned_cache = grpo.autoregressive_decode_step(
+        model=model,
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        past_key_values=("old_cache",),
+        temperature=1.0,
+        top_p=0.6,
+        eos_token_id=1,
+    )
+
+    assert torch.equal(next_tokens, torch.tensor([0]))
+    assert torch.allclose(captured["probs"], torch.tensor([[1.0, 0.0, 0.0]]))
+    assert returned_cache == ("new_cache",)
+    assert model.calls[0]["past_key_values"] == ("old_cache",)
+    assert model.calls[0]["use_cache"] is True
