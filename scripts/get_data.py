@@ -9,25 +9,34 @@ DEFAULT_SAVE_PATH = Path(__file__).resolve().parents[1] / "data" / "DafnyBench" 
 def load_dafnybench_data(split: str = "test") -> pl.DataFrame:
     """Loads the DafnyBench dataset into a polars DataFrame."""
     ds = datasets.load_dataset("wendy-sun/DafnyBench")
-    table = ds[split].with_format("polars")[:]  
+    table = ds[split].with_format("polars")[:]
     df = pl.DataFrame(table)
-    # normalize columns to a consistent schema we use elsewhere.
+
     rename_map = {
+        "test_ID": "id",
+        "test_file": "header",
         "hints_removed": "body",
         "ground_truth": "annotated_body",
-        "file_name": "id",
-        "filename": "id",
     }
-    # rename columns if needed
     for old, new in rename_map.items():
         if old in df.columns and new not in df.columns:
             df = df.rename({old: new})
+
     if "id" not in df.columns:
         df = df.with_row_index("id")
-    if "spec" not in df.columns:
-        df = df.with_columns(pl.lit(None).alias("spec"))
+
     if "header" not in df.columns:
-        df = df.with_columns(pl.lit(None).alias("header"))
+        df = df.with_columns(pl.lit(None, dtype=pl.Utf8).alias("header"))
+
+    if "body" not in df.columns:
+        df = df.with_columns(pl.lit(None, dtype=pl.Utf8).alias("body"))
+
+    if "annotated_body" not in df.columns:
+        df = df.with_columns(pl.lit(None, dtype=pl.Utf8).alias("annotated_body"))
+
+    if "spec" not in df.columns:
+        df = df.with_columns(pl.lit(None, dtype=pl.Utf8).alias("spec"))
+
     return df
 
 
