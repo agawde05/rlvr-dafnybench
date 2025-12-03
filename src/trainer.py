@@ -278,7 +278,6 @@ class CustomRLTrainer:
             return rollouts
 
         for prompt_idx, prompt in enumerate(minibatch.prompts):
-            print(f"Collecting rollouts for prompt {prompt_idx} of {len(minibatch.prompts)}")
             prompt_ids = minibatch.prompt_token_ids[prompt_idx]
             prompt_tensor = torch.tensor(
                 prompt_ids, dtype=torch.long, device=self.device
@@ -288,21 +287,32 @@ class CustomRLTrainer:
             else:
                 prompt_attention_mask = torch.ones_like(prompt_tensor, dtype=torch.long)
 
-            with torch.no_grad():
-                generated = self.old_model.generate(
-                    input_ids=prompt_tensor,
-                    attention_mask=prompt_attention_mask,
-                    max_new_tokens=self.config.max_new_tokens,
-                    temperature=self.config.temperature,
-                    top_p=self.config.top_p,
-                    do_sample=True,
-                    pad_token_id=pad_token_id,
-                    eos_token_id=eos_token_id,
-                    num_return_sequences=self.config.group_size,
+            for _ in range(self.config.group_size):
+                autocast_context = (
+                    autocast()  # type: ignore[operator]
+                    if (
+                        autocast is not None
+                        and self.config.mixed_precision
+                        and self.device.type == "cuda"
+                    )
+                    else _NullContext()
                 )
+                with torch.no_grad():
+                    with autocast_context:
+                        generated = self.old_model.generate(
+                            input_ids=prompt_tensor,
+                            attention_mask=prompt_attention_mask,
+                            max_new_tokens=self.config.max_new_tokens,
+                            temperature=self.config.temperature,
+                            top_p=self.config.top_p,
+                            do_sample=True,
+                            pad_token_id=pad_token_id,
+                            eos_token_id=eos_token_id,
+                            return_dict_in_generate=False,
+                            output_scores=False,
+                        )
 
-            for seq_idx in range(self.config.group_size):
-                generated_ids = generated[seq_idx].tolist()
+                generated_ids = generated[0].tolist()
                 completion_ids = generated_ids[len(prompt_ids) :]
                 if eos_token_id is not None and (
                     not completion_ids or completion_ids[-1] != eos_token_id
@@ -331,6 +341,9 @@ class CustomRLTrainer:
                     reward_components={},
                 )
                 rollouts.append(RolloutItem(response=response, metadata=metadata[prompt_idx]))
+
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
 
         return rollouts
 
