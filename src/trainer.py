@@ -278,6 +278,7 @@ class CustomRLTrainer:
             return rollouts
 
         for prompt_idx, prompt in enumerate(minibatch.prompts):
+            print(f"Collecting rollouts for prompt {prompt_idx} of {len(minibatch.prompts)}")
             prompt_ids = minibatch.prompt_token_ids[prompt_idx]
             prompt_tensor = torch.tensor(
                 prompt_ids, dtype=torch.long, device=self.device
@@ -287,20 +288,21 @@ class CustomRLTrainer:
             else:
                 prompt_attention_mask = torch.ones_like(prompt_tensor, dtype=torch.long)
 
-            for _ in range(self.config.group_size):
-                with torch.no_grad():
-                    generated = self.old_model.generate(
-                        input_ids=prompt_tensor,
-                        attention_mask=prompt_attention_mask,
-                        max_new_tokens=self.config.max_new_tokens,
-                        temperature=self.config.temperature,
-                        top_p=self.config.top_p,
-                        do_sample=True,
-                        pad_token_id=pad_token_id,
-                        eos_token_id=eos_token_id,
-                    )
+            with torch.no_grad():
+                generated = self.old_model.generate(
+                    input_ids=prompt_tensor,
+                    attention_mask=prompt_attention_mask,
+                    max_new_tokens=self.config.max_new_tokens,
+                    temperature=self.config.temperature,
+                    top_p=self.config.top_p,
+                    do_sample=True,
+                    pad_token_id=pad_token_id,
+                    eos_token_id=eos_token_id,
+                    num_return_sequences=self.config.group_size,
+                )
 
-                generated_ids = generated[0].tolist()
+            for seq_idx in range(self.config.group_size):
+                generated_ids = generated[seq_idx].tolist()
                 completion_ids = generated_ids[len(prompt_ids) :]
                 if eos_token_id is not None and (
                     not completion_ids or completion_ids[-1] != eos_token_id
@@ -313,8 +315,6 @@ class CustomRLTrainer:
                 full_text = self.tokenizer.decode(
                     generated_ids, skip_special_tokens=False
                 )
-
-                print(f"Completion text: {completion_text}")
 
                 response = Response(
                     prompt=prompt,

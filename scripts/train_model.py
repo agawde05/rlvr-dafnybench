@@ -50,6 +50,8 @@ def _prepare_prompts(split: str = "test") -> List[str]:
 
 
 def main() -> None:
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
     model_name = "Qwen/Qwen2.5-1.5B"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name)
@@ -72,7 +74,7 @@ def main() -> None:
         model=model,
         tokenizer=tokenizer,
         config=config,
-        device="cuda" if torch.cuda.is_available() else "cpu",
+        device=device,
     )
 
     print("Starting training...")
