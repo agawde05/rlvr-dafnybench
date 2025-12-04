@@ -726,7 +726,7 @@ class CustomRLTrainer:
 
     def _autocast_context(self):
         if self.use_autocast and autocast:
-            return autocast()
+            return autocast(device_type=self.device.type, dtype=torch.float16)
         return _NullContext()
 
 
