@@ -32,9 +32,8 @@ from verification_task import (
 )
 
 try:
-    from torch.cuda.amp import GradScaler, autocast
+    from torch.cuda.amp import autocast
 except ImportError:  # pragma: no cover - CPU-only environments
-    GradScaler = None  # type: ignore
     autocast = None  # type: ignore
 
 
@@ -134,6 +133,9 @@ class CustomRLTrainer:
         self.policy_model = model.to(self.device)
         self.policy_model.train()
         self.pad_token_id = getattr(self.tokenizer, "pad_token_id", 0) or 0
+        self.use_autocast = bool(
+            self.config.mixed_precision and autocast and torch.cuda.is_available()
+        )
 
         self.ref_model = (ref_model or self._clone_model(self.policy_model)).to(
             self.device
@@ -144,13 +146,6 @@ class CustomRLTrainer:
             self.policy_model.parameters(), lr=self.config.learning_rate
         )
         self.scheduler = scheduler
-
-        scaler_enabled = (
-            bool(self.config.mixed_precision)
-            and GradScaler is not None
-            and torch.cuda.is_available()
-        )
-        self.scaler = GradScaler(enabled=scaler_enabled) if GradScaler else None
 
         self.dafny = dafny or (Dafny(Path(dafny_path)) if dafny_path else None)
         self.reward_fn: RewardFn = reward_fn or self._build_default_reward_fn()
@@ -544,20 +539,13 @@ class CustomRLTrainer:
                     "loss": float(loss.detach().cpu()),
                 }
 
-                scaled_loss = loss / grad_accum_steps
-                if self.scaler:
-                    self.scaler.scale(scaled_loss).backward()
-                else:
-                    scaled_loss.backward()
+                loss = loss / grad_accum_steps
+                loss.backward()
 
                 accumulation_step += 1
                 if accumulation_step % grad_accum_steps == 0:
                     grad_norm = self._clip_gradients(self.policy_model)
-                    if self.scaler:
-                        self.scaler.step(self.optimizer)
-                        self.scaler.update()
-                    else:
-                        self.optimizer.step()
+                    self.optimizer.step()
 
                     if self.scheduler:
                         self.scheduler.step()
@@ -569,11 +557,7 @@ class CustomRLTrainer:
 
         if accumulation_step % grad_accum_steps != 0:
             grad_norm = self._clip_gradients(self.policy_model)
-            if self.scaler:
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                self.optimizer.step()
+            self.optimizer.step()
 
             if self.scheduler:
                 self.scheduler.step()
@@ -749,7 +733,7 @@ class CustomRLTrainer:
             destination.eval()
 
     def _autocast_context(self):
-        if self.scaler and autocast:
+        if self.use_autocast and autocast:
             return autocast()
         return _NullContext()
 
