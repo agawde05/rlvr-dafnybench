@@ -34,9 +34,10 @@ from verification_task import (
 )
 
 try:
-    from torch.cuda.amp import GradScaler
+    from torch.cuda.amp import GradScaler, autocast
 except ImportError:  # pragma: no cover - CPU-only environments
     GradScaler = None  # type: ignore
+    autocast = None  # type: ignore
 
 
 RewardFn = Callable[[str, str, Mapping[str, Any]], Tuple[float, Dict[str, Any]]]
