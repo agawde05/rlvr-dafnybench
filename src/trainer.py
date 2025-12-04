@@ -545,9 +545,6 @@ class CustomRLTrainer:
             loss = loss / grad_accum_steps
             loss.backward()
 
-            del loss, objective, logits, per_token_loss, token_log_probs, advantages_expanded
-            torch.cuda.empty_cache()
-
         grad_norm = self._clip_gradients(self.policy_model)
 
         self.optimizer.step()
