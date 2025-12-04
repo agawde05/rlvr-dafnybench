@@ -32,7 +32,7 @@ from verification_task import (
 )
 
 try:
-    from torch.cuda.amp import autocast
+    from torch.amp import autocast
 except ImportError:  # pragma: no cover - CPU-only environments
     autocast = None  # type: ignore
 
@@ -726,7 +726,7 @@ class CustomRLTrainer:
 
     def _autocast_context(self):
         if self.use_autocast and autocast:
-            return autocast('cuda', dtype=torch.float16)
+            return autocast(device_type=self.device, dtype=torch.bfloat16)
         return _NullContext()
 
 
