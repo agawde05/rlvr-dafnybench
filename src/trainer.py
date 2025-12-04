@@ -328,18 +328,19 @@ class CustomRLTrainer:
                 self.policy_model.eval()
             try:
                 with torch.no_grad():
-                    generated = self.policy_model.generate(
-                        input_ids=batch_input,
-                        attention_mask=prompt_attention_mask,
-                        max_new_tokens=self.config.max_new_tokens,
-                        temperature=self.config.temperature,
-                        top_p=self.config.top_p,
-                        do_sample=True,
-                        pad_token_id=pad_token_id,
-                        eos_token_id=eos_token_id,
-                        return_dict_in_generate=True,
-                        output_scores=False,
-                    )
+                    with self._autocast_context():
+                        generated = self.policy_model.generate(
+                            input_ids=batch_input,
+                            attention_mask=prompt_attention_mask,
+                            max_new_tokens=self.config.max_new_tokens,
+                            temperature=self.config.temperature,
+                            top_p=self.config.top_p,
+                            do_sample=True,
+                            pad_token_id=pad_token_id,
+                            eos_token_id=eos_token_id,
+                            return_dict_in_generate=True,
+                            output_scores=False,
+                        )
             finally:
                 if model_was_training:
                     self.policy_model.train()
