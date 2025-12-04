@@ -544,6 +544,8 @@ class CustomRLTrainer:
                     )
                     loss = -objective
 
+                    del outputs
+
                 step_metrics = {
                     "loss": float(loss.detach().cpu()),
                 }
