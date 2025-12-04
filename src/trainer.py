@@ -527,8 +527,6 @@ class CustomRLTrainer:
                     print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
 
                     logits = outputs.logits
-                    if logits.dtype != torch.float32:
-                        logits = logits.float()
 
                     per_token_loss = F.cross_entropy(
                         logits.reshape(-1, logits.size(-1)),
@@ -544,16 +542,12 @@ class CustomRLTrainer:
                     )
                     loss = -objective
 
-                    del outputs
-
                 step_metrics = {
                     "loss": float(loss.detach().cpu()),
                 }
 
                 loss = loss / grad_accum_steps
                 loss.backward()
-                del loss, objective, logits, token_log_probs, advantages_expanded
-                torch.cuda.empty_cache()
 
                 accumulation_step += 1
                 if accumulation_step % grad_accum_steps == 0:
