@@ -11,12 +11,12 @@ import torch
 from torch import Tensor, nn
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import AdamW, Optimizer
+import torch.nn.functional as F
 import re
 
 
 from dafny_file import Dafny
 from data_types import GrpoConfig, Response
-from grpo_zero import PolicyBatch
 from rlvr_dafnybench.utils import tensor_info
 
 from verification_task import (
@@ -54,6 +54,17 @@ class RolloutItem:
     metadata: Mapping[str, Any]
 
 
+@dataclass
+class PolicyBatch:
+    """Micro-batch container for GRPO updates."""
+
+    input_ids: Tensor
+    attention_mask: Tensor
+    target_mask: Tensor
+    advantages: Tensor
+    num_target_tokens: int
+
+
 class CustomRLTrainer:
     """
     Modular GRPO-style trainer that orchestrates sampling, reward computation,
@@ -73,9 +84,8 @@ class CustomRLTrainer:
         GRPO configuration. Defaults to `GrpoConfig()` when omitted.
     optimizer:
         Optional PyTorch optimizer. Defaults to AdamW over `model.parameters()`.
-    old_model / ref_model:
-        Optional initial clones of `model` for π_old and π_ref respectively.
-        When not provided the trainer creates deep copies on the chosen device.
+    ref_model:
+        Optional initial clone of `model` to serve as a frozen reference policy.
     scheduler:
         Optional learning-rate scheduler.
     dafny:
@@ -112,7 +122,6 @@ class CustomRLTrainer:
         reward_fn: Optional[RewardFn] = None,
         config: Optional[GrpoConfig] = None,
         optimizer: Optional[Optimizer] = None,
-        old_model: Optional[nn.Module] = None,
         ref_model: Optional[nn.Module] = None,
         scheduler: Optional[Any] = None,
         dafny: Optional[Dafny] = None,
@@ -126,11 +135,7 @@ class CustomRLTrainer:
         self.tokenizer = tokenizer
         self.policy_model = model.to(self.device)
         self.policy_model.train()
-
-        self.old_model = (old_model or self._clone_model(self.policy_model)).to(
-            self.device
-        )
-        self.old_model.eval()
+        self.pad_token_id = getattr(self.tokenizer, "pad_token_id", 0) or 0
 
         self.ref_model = (ref_model or self._clone_model(self.policy_model)).to(
             self.device
@@ -244,11 +249,6 @@ class CustomRLTrainer:
             ):
                 self._save_checkpoint(checkpoint_path, self._step)
 
-            if self.config.old_update_freq > 0 and (
-                self._step % self.config.old_update_freq == 0
-            ):
-                self._sync_model(self.policy_model, self.old_model, freeze=False)
-
             if self.config.ref_update_freq > 0 and (
                 self._step % self.config.ref_update_freq == 0
             ):
@@ -330,19 +330,26 @@ class CustomRLTrainer:
 
             batch_input = prompt_tensor.repeat(self.config.group_size, 1)
 
-            with torch.no_grad():
-                generated = self.old_model.generate(
-                    input_ids=batch_input,
-                    attention_mask=prompt_attention_mask,
-                    max_new_tokens=self.config.max_new_tokens,
-                    temperature=self.config.temperature,
-                    top_p=self.config.top_p,
-                    do_sample=True,
-                    pad_token_id=pad_token_id,
-                    eos_token_id=eos_token_id,
-                    return_dict_in_generate=True,
-                    output_scores=False,
-                )
+            model_was_training = self.policy_model.training
+            if model_was_training:
+                self.policy_model.eval()
+            try:
+                with torch.no_grad():
+                    generated = self.policy_model.generate(
+                        input_ids=batch_input,
+                        attention_mask=prompt_attention_mask,
+                        max_new_tokens=self.config.max_new_tokens,
+                        temperature=self.config.temperature,
+                        top_p=self.config.top_p,
+                        do_sample=True,
+                        pad_token_id=pad_token_id,
+                        eos_token_id=eos_token_id,
+                        return_dict_in_generate=True,
+                        output_scores=False,
+                    )
+            finally:
+                if model_was_training:
+                    self.policy_model.train()
 
             sequences = generated.sequences.tolist()
 
@@ -421,76 +428,59 @@ class CustomRLTrainer:
     def _build_policy_batch(
         self, rollouts: List[RolloutItem], advantages: List[float]
     ) -> List[PolicyBatch]:
-        pad_token_id = getattr(self.tokenizer, "pad_token_id", 0) or 0
-
-        sequences: List[List[int]] = []
-        prompt_lengths: List[int] = []
-        for item in rollouts:
+        sequences: List[Tuple[List[int], int, float]] = []
+        for idx, item in enumerate(rollouts):
             prompt_ids = list(item.response.prompt_token_ids)
             completion_ids = list(item.response.generated_token_ids)
-            sequences.append(prompt_ids + completion_ids)
-            prompt_lengths.append(len(prompt_ids))
+            if not completion_ids:
+                continue
+            seq = prompt_ids + completion_ids
+            sequences.append((seq, len(prompt_ids), advantages[idx]))
 
         if not sequences:
             return []
 
-        policy_microbatch_size = self.config.microbatch_size
-        if policy_microbatch_size is None or policy_microbatch_size <= 0:
-            policy_microbatch_size = len(sequences)
+        sequences.sort(key=lambda x: len(x[0]))
+        micro_size = self.config.microbatch_size or len(sequences)
 
-        policy_batches: List[PolicyBatch] = []
-        for start in range(0, len(sequences), policy_microbatch_size):
-            end = min(start + policy_microbatch_size, len(sequences))
-            chunk_sequences = sequences[start:end]
-            chunk_prompt_lengths = prompt_lengths[start:end]
-            chunk_advantages = advantages[start:end]
-
-            chunk_max_len = max(len(seq) for seq in chunk_sequences)
-            if chunk_max_len == 0:
-                continue
+        batches: List[PolicyBatch] = []
+        for start in range(0, len(sequences), micro_size):
+            chunk = sequences[start : start + micro_size]
+            chunk_max_len = max(len(seq) for seq, _, _ in chunk)
+            batch_size = len(chunk)
 
             input_ids = torch.full(
-                (len(chunk_sequences), chunk_max_len),
-                pad_token_id,
+                (batch_size, chunk_max_len),
+                self.pad_token_id,
                 dtype=torch.long,
                 device=self.device,
             )
-            attention_mask = torch.zeros_like(input_ids)
+            attention_mask = torch.zeros_like(input_ids, dtype=torch.long)
             target_mask = torch.zeros_like(input_ids, dtype=torch.float32)
+            advantages_tensor = torch.zeros(batch_size, device=self.device, dtype=torch.float32)
 
-            for idx, seq in enumerate(chunk_sequences):
+            num_target_tokens = 0
+
+            for row_idx, (seq, prompt_len, adv) in enumerate(chunk):
                 length = len(seq)
-                if length == 0:
-                    continue
                 seq_tensor = torch.tensor(seq, dtype=torch.long, device=self.device)
-                input_ids[idx, :length] = seq_tensor
-                attention_mask[idx, :length] = 1
-                target_mask[idx, chunk_prompt_lengths[idx] : length] = 1.0
+                input_ids[row_idx, :length] = seq_tensor
+                attention_mask[row_idx, :length] = 1.0
+                target_mask[row_idx, prompt_len:length] = 1.0
+                advantages_tensor[row_idx] = float(adv)
+                num_target_tokens += max(length - prompt_len, 0)
 
-            advantages_tensor = torch.tensor(
-                chunk_advantages, dtype=torch.float32, device=self.device
-            )
-
-            with torch.no_grad():
-                old_log_probs, _ = self._compute_log_probs(
-                    self.old_model,
-                    input_ids,
-                    attention_mask,
-                    target_mask,
-                    requires_grad=False,
-                )
-
-            policy_batches.append(
+            batches.append(
                 PolicyBatch(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     target_mask=target_mask,
                     advantages=advantages_tensor,
-                    old_log_probs=old_log_probs,
+                    num_target_tokens=num_target_tokens,
                 )
             )
 
-        return policy_batches
+        return batches
 
     # --------------------------------------------------------------------- #
     # Policy Update
@@ -501,66 +491,83 @@ class CustomRLTrainer:
         if not policy_batches:
             return {}
 
+        total_target_tokens = sum(
+            batch.num_target_tokens for batch in policy_batches if batch.num_target_tokens
+        )
+        if total_target_tokens == 0:
+            return {}
+
         metrics_accumulator: Dict[str, float] = {}
         grad_accum_steps = max(1, self.config.gradient_accumulation_steps)
-        num_epochs = max(1, self.config.num_ppo_epochs)
-
         accumulation_step = 0
         self.optimizer.zero_grad()
+        pad_token_id = self.pad_token_id
 
-        for epoch in range(num_epochs):
-            for micro in policy_batches:
-                if micro.input_ids.numel() == 0:
-                    continue
-                policy_log_probs, policy_logits = self._compute_log_probs(
-                    self.policy_model,
-                    micro.input_ids,
-                    micro.attention_mask,
-                    micro.target_mask,
-                    requires_grad=True,
+        for micro in policy_batches:
+            if micro.num_target_tokens == 0:
+                continue
+
+            input_ids = micro.input_ids
+            attention_mask = micro.attention_mask
+            target_mask = micro.target_mask
+            advantages = micro.advantages
+
+            input_token_ids = input_ids[:, :-1]
+            target_token_ids = input_ids[:, 1:]
+            attention_for_model = attention_mask[:, :-1]
+            target_token_mask = target_mask[:, 1:]
+
+            with self._autocast_context():
+                outputs = self.policy_model(
+                    input_ids=input_token_ids,
+                    attention_mask=attention_for_model,
                 )
+                logits = outputs.logits
+                if logits.dtype != torch.float32:
+                    logits = logits.float()
 
-                with torch.no_grad():
-                    ref_log_probs, _ = self._compute_log_probs(
-                        self.ref_model,
-                        micro.input_ids,
-                        micro.attention_mask,
-                        micro.target_mask,
-                        requires_grad=False,
-                    )
+                per_token_loss = F.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    target_token_ids.reshape(-1),
+                    ignore_index=pad_token_id,
+                    reduction="none",
+                ).reshape(target_token_mask.shape)
 
-                entropy = self._compute_entropy(policy_logits, micro.target_mask)
-                loss, step_metrics = self._compute_grpo_loss(
-                    policy_log_probs,
-                    micro.old_log_probs,
-                    ref_log_probs,
-                    micro.advantages,
-                    micro.target_mask,
-                    entropy,
+                token_log_probs = -per_token_loss * target_token_mask
+                advantages_expanded = advantages.view(-1, 1)
+                objective = (token_log_probs * advantages_expanded).sum() / float(
+                    total_target_tokens
                 )
-                loss = loss / grad_accum_steps
+                loss = -objective
 
+            entropy = self._compute_entropy(logits, target_token_mask)
+            step_metrics = {
+                "loss": float(loss.detach().cpu()),
+                "entropy": float(entropy.detach().cpu()),
+            }
+
+            scaled_loss = loss / grad_accum_steps
+            if self.scaler:
+                self.scaler.scale(scaled_loss).backward()
+            else:
+                scaled_loss.backward()
+
+            accumulation_step += 1
+            if accumulation_step % grad_accum_steps == 0:
+                grad_norm = self._clip_gradients(self.policy_model)
                 if self.scaler:
-                    self.scaler.scale(loss).backward()
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
                 else:
-                    loss.backward()
+                    self.optimizer.step()
 
-                accumulation_step += 1
-                if accumulation_step % grad_accum_steps == 0:
-                    grad_norm = self._clip_gradients(self.policy_model)
-                    if self.scaler:
-                        self.scaler.step(self.optimizer)
-                        self.scaler.update()
-                    else:
-                        self.optimizer.step()
+                if self.scheduler:
+                    self.scheduler.step()
 
-                    if self.scheduler:
-                        self.scheduler.step()
+                self.optimizer.zero_grad()
+                step_metrics["grad_norm"] = grad_norm
 
-                    self.optimizer.zero_grad()
-                    step_metrics["grad_norm"] = grad_norm
-
-                self._accumulate_metrics(metrics_accumulator, step_metrics)
+            self._accumulate_metrics(metrics_accumulator, step_metrics)
 
         if accumulation_step % grad_accum_steps != 0:
             grad_norm = self._clip_gradients(self.policy_model)
@@ -620,36 +627,6 @@ class CustomRLTrainer:
     # --------------------------------------------------------------------- #
     # Low-level Utilities
     # --------------------------------------------------------------------- #
-    def _compute_log_probs(
-        self,
-        model: nn.Module,
-        input_ids: Tensor,
-        attention_mask: Tensor,
-        target_mask: Tensor,
-        requires_grad: bool,
-    ) -> Tuple[Tensor, Tensor]:
-        context = torch.enable_grad() if requires_grad else torch.no_grad()
-        with context:
-            outputs = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-            )
-            logits: Tensor = outputs.logits
-            log_probs = torch.log_softmax(logits, dim=-1)
-
-        shifted_input = input_ids[:, 1:]
-        shifted_log_probs = log_probs[:, :-1, :]
-        gathered = torch.gather(
-            shifted_log_probs,
-            dim=2,
-            index=shifted_input.unsqueeze(-1),
-        ).squeeze(-1)
-
-        token_log_probs = torch.zeros_like(input_ids, dtype=log_probs.dtype)
-        token_log_probs[:, 1:] = gathered
-        token_log_probs = token_log_probs * target_mask
-        return token_log_probs, logits
-
     def _compute_entropy(self, logits: Tensor, target_mask: Tensor) -> Tensor:
         probs = torch.softmax(logits, dim=-1)
         log_probs = torch.log_softmax(logits, dim=-1)
@@ -657,55 +634,6 @@ class CustomRLTrainer:
         mask = target_mask
         normalizer = mask.sum().clamp_min(1.0)
         return (entropy * mask).sum() / normalizer
-
-    def _compute_grpo_loss(
-        self,
-        policy_log_probs: Tensor,
-        old_log_probs: Tensor,
-        ref_log_probs: Tensor,
-        advantages: Tensor,
-        target_mask: Tensor,
-        entropy: Tensor,
-    ) -> Tuple[Tensor, Dict[str, float]]:
-        mask = target_mask
-        token_count = mask.sum(dim=1).clamp_min(1.0)
-
-        log_ratio = (policy_log_probs - old_log_probs) * mask
-        log_ratio_sum = log_ratio.sum(dim=1) / token_count
-        ratio = torch.exp(log_ratio_sum)
-        clipped_ratio = torch.clamp(
-            ratio, 1.0 - self.config.clip_ratio, 1.0 + self.config.clip_ratio
-        )
-
-        unclipped = ratio * advantages
-        clipped = clipped_ratio * advantages
-        policy_obj = torch.min(unclipped, clipped)
-
-        policy_loss = -policy_obj.mean()
-
-        kl_per_token = (policy_log_probs - ref_log_probs) * mask
-        kl = (kl_per_token.sum(dim=1) / token_count).mean()
-
-        loss = (
-            policy_loss
-            + self.config.kl_coef * kl
-            - self.config.entropy_coef * entropy
-        )
-
-        clip_fraction = (
-            (ratio - clipped_ratio).abs() > 1e-8
-        ).float().mean()
-        approx_kl = 0.5 * (log_ratio_sum**2).mean()
-
-        metrics = {
-            "loss": float(loss.detach().cpu()),
-            "policy_loss": float(policy_loss.detach().cpu()),
-            "kl_penalty": float(kl.detach().cpu()),
-            "entropy": float(entropy.detach().cpu()),
-            "clip_fraction": float(clip_fraction.detach().cpu()),
-            "approx_kl": float(approx_kl.detach().cpu()),
-        }
-        return loss, metrics
 
     def _clip_gradients(self, model: nn.Module) -> float:
         max_norm = float(self.config.max_grad_norm)
