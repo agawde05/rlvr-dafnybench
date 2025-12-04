@@ -516,10 +516,11 @@ class CustomRLTrainer:
                         input_ids=input_token_ids,
                         attention_mask=attention_for_model,
                     )
+
                     print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
                     print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
-                    logits = outputs.logits.detach()
-                    del outputs
+
+                    logits = outputs.logits
                     if logits.dtype != torch.float32:
                         logits = logits.float()
 
@@ -543,6 +544,8 @@ class CustomRLTrainer:
 
                 loss = loss / grad_accum_steps
                 loss.backward()
+                del loss, outputs, logits, per_token_loss, objective, token_log_probs, advantages_expanded
+                torch.cuda.empty_cache()
 
                 accumulation_step += 1
                 if accumulation_step % grad_accum_steps == 0:
