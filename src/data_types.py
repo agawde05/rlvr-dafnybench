@@ -98,6 +98,12 @@ class GrpoConfig:
             "help": "Entropy bonus coefficient encouraging exploration during training."
         },
     )
+    log_prob_microbatch_size: int = field(
+        default=0,
+        metadata={
+            "help": "Split log-prob evaluation across micro-batches to reduce peak memory. 0 disables chunking."
+        },
+    )
     value_loss_coef: float = field(
         default=0.0,
         metadata={
