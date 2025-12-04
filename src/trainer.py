@@ -17,8 +17,6 @@ import re
 
 from dafny_file import Dafny
 from data_types import GrpoConfig, Response
-from rlvr_dafnybench.utils import tensor_info
-
 from verification_task import (
     ASSUMTION_WEIGHT,
     DELETION_WEIGHT,
@@ -68,7 +66,7 @@ class PolicyBatch:
 class CustomRLTrainer:
     """
     Modular GRPO-style trainer that orchestrates sampling, reward computation,
-    and PPO updates for the Dafny verification task.
+    and policy updates for the Dafny verification task.
 
     Parameters
     ----------
@@ -502,72 +500,72 @@ class CustomRLTrainer:
         accumulation_step = 0
         self.optimizer.zero_grad()
         pad_token_id = self.pad_token_id
+        num_epochs = max(1, getattr(self.config, "num_epochs", 1))
 
-        for micro in policy_batches:
-            if micro.num_target_tokens == 0:
-                continue
+        for _ in range(num_epochs):
+            for micro in policy_batches:
+                if micro.num_target_tokens == 0:
+                    continue
 
-            input_ids = micro.input_ids
-            attention_mask = micro.attention_mask
-            target_mask = micro.target_mask
-            advantages = micro.advantages
+                input_ids = micro.input_ids
+                attention_mask = micro.attention_mask
+                target_mask = micro.target_mask
+                advantages = micro.advantages
 
-            input_token_ids = input_ids[:, :-1]
-            target_token_ids = input_ids[:, 1:]
-            attention_for_model = attention_mask[:, :-1]
-            target_token_mask = target_mask[:, 1:]
+                input_token_ids = input_ids[:, :-1]
+                target_token_ids = input_ids[:, 1:]
+                attention_for_model = attention_mask[:, :-1]
+                target_token_mask = target_mask[:, 1:]
 
-            with self._autocast_context():
-                outputs = self.policy_model(
-                    input_ids=input_token_ids,
-                    attention_mask=attention_for_model,
-                )
-                logits = outputs.logits
-                if logits.dtype != torch.float32:
-                    logits = logits.float()
+                with self._autocast_context():
+                    outputs = self.policy_model(
+                        input_ids=input_token_ids,
+                        attention_mask=attention_for_model,
+                    )
+                    logits = outputs.logits
+                    if logits.dtype != torch.float32:
+                        logits = logits.float()
 
-                per_token_loss = F.cross_entropy(
-                    logits.reshape(-1, logits.size(-1)),
-                    target_token_ids.reshape(-1),
-                    ignore_index=pad_token_id,
-                    reduction="none",
-                ).reshape(target_token_mask.shape)
+                    per_token_loss = F.cross_entropy(
+                        logits.reshape(-1, logits.size(-1)),
+                        target_token_ids.reshape(-1),
+                        ignore_index=pad_token_id,
+                        reduction="none",
+                    ).reshape(target_token_mask.shape)
 
-                token_log_probs = -per_token_loss * target_token_mask
-                advantages_expanded = advantages.view(-1, 1)
-                objective = (token_log_probs * advantages_expanded).sum() / float(
-                    total_target_tokens
-                )
-                loss = -objective
+                    token_log_probs = -per_token_loss * target_token_mask
+                    advantages_expanded = advantages.view(-1, 1)
+                    objective = (token_log_probs * advantages_expanded).sum() / float(
+                        total_target_tokens
+                    )
+                    loss = -objective
 
-            entropy = self._compute_entropy(logits, target_token_mask)
-            step_metrics = {
-                "loss": float(loss.detach().cpu()),
-                "entropy": float(entropy.detach().cpu()),
-            }
+                step_metrics = {
+                    "loss": float(loss.detach().cpu()),
+                }
 
-            scaled_loss = loss / grad_accum_steps
-            if self.scaler:
-                self.scaler.scale(scaled_loss).backward()
-            else:
-                scaled_loss.backward()
-
-            accumulation_step += 1
-            if accumulation_step % grad_accum_steps == 0:
-                grad_norm = self._clip_gradients(self.policy_model)
+                scaled_loss = loss / grad_accum_steps
                 if self.scaler:
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
+                    self.scaler.scale(scaled_loss).backward()
                 else:
-                    self.optimizer.step()
+                    scaled_loss.backward()
 
-                if self.scheduler:
-                    self.scheduler.step()
+                accumulation_step += 1
+                if accumulation_step % grad_accum_steps == 0:
+                    grad_norm = self._clip_gradients(self.policy_model)
+                    if self.scaler:
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                    else:
+                        self.optimizer.step()
 
-                self.optimizer.zero_grad()
-                step_metrics["grad_norm"] = grad_norm
+                    if self.scheduler:
+                        self.scheduler.step()
 
-            self._accumulate_metrics(metrics_accumulator, step_metrics)
+                    self.optimizer.zero_grad()
+                    step_metrics["grad_norm"] = grad_norm
+
+                self._accumulate_metrics(metrics_accumulator, step_metrics)
 
         if accumulation_step % grad_accum_steps != 0:
             grad_norm = self._clip_gradients(self.policy_model)
@@ -627,14 +625,6 @@ class CustomRLTrainer:
     # --------------------------------------------------------------------- #
     # Low-level Utilities
     # --------------------------------------------------------------------- #
-    def _compute_entropy(self, logits: Tensor, target_mask: Tensor) -> Tensor:
-        probs = torch.softmax(logits, dim=-1)
-        log_probs = torch.log_softmax(logits, dim=-1)
-        entropy = -(probs * log_probs).sum(dim=-1)
-        mask = target_mask
-        normalizer = mask.sum().clamp_min(1.0)
-        return (entropy * mask).sum() / normalizer
-
     def _clip_gradients(self, model: nn.Module) -> float:
         max_norm = float(self.config.max_grad_norm)
         grad_norm = clip_grad_norm_(model.parameters(), max_norm)

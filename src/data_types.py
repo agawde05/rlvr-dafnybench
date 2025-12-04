@@ -108,6 +108,12 @@ class GrpoConfig:
             "help": "Value loss weight (unused in GRPO-Zero but kept for extensibility)."
         },
     )
+    num_epochs: int = field(
+        default=1,
+        metadata={
+            "help": "Number of passes over each batch during the policy update."
+        },
+    )
 
     # Reward normalization
     reward_norm_eps: float = field(
