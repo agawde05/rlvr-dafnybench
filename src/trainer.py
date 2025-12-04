@@ -354,7 +354,6 @@ class CustomRLTrainer:
                 completion_text = self.tokenizer.decode(
                     completion_ids, skip_special_tokens=True
                 )
-                print(f"Completion text: {completion_text}")
                 full_text = self.tokenizer.decode(
                     generated_ids, skip_special_tokens=True
                 )
@@ -522,6 +521,8 @@ class CustomRLTrainer:
                     logits = outputs.logits
                     if logits.dtype != torch.float32:
                         logits = logits.float()
+
+                    torch.cuda.empty_cache()
 
                     per_token_loss = F.cross_entropy(
                         logits.reshape(-1, logits.size(-1)),
