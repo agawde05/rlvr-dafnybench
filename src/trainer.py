@@ -318,6 +318,10 @@ class CustomRLTrainer:
 
             sequences = generated.sequences.tolist()
 
+            del generated # free memory i think
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
             for _ in range(self.config.group_size):
 
                 generated_ids = sequences[_]
