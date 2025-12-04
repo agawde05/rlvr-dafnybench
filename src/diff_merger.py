@@ -142,6 +142,9 @@ def _parse_diff_spec(diff: DiffInput) -> Mapping[str, Any]:
     else:
         raise DiffMergeError("Diff must be a JSON string or mapping.")
 
+    if not isinstance(diff_data, dict):
+        raise DiffMergeError("Diff JSON must be an object or a list of hunks.")
+
     hunks = diff_data.get("hunks")
     if hunks is None:
         # Allow top-level {"diff": [...]} for robustness.
