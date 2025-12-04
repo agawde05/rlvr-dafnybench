@@ -9,7 +9,7 @@ DEFAULT_SAVE_PATH = Path(__file__).resolve().parents[1] / "data" / "DafnyBench" 
 def load_dafnybench_data(split: str = "test") -> pl.DataFrame:
     """Loads the DafnyBench dataset into a polars DataFrame."""
     ds = datasets.load_dataset("wendy-sun/DafnyBench")
-    table = ds[split].with_format("polars")[:]
+    table = ds[split].with_format("polars")[:]  
     df = pl.DataFrame(table)
 
     rename_map = {

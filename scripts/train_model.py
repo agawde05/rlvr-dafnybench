@@ -5,6 +5,7 @@ from typing import List
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from src.reward import build_verification_reward
 
 from src.data_types import GrpoConfig
 from scripts.get_data import (
@@ -52,9 +53,11 @@ def _prepare_prompts(split: str = "test") -> List[str]:
 def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
-    model_name = "Qwen/Qwen2.5-1.5B"
+    model_name = "Qwen/Qwen2.5-1.5B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16)
+
+    reward_fn = build_verification_reward(Path("dafny"))
 
     print("Model loaded successfully")
 
@@ -73,6 +76,7 @@ def main() -> None:
     trainer = CustomRLTrainer(
         model=model,
         tokenizer=tokenizer,
+        reward_fn=reward_fn,
         config=config,
         device=device,
     )

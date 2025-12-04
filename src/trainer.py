@@ -11,6 +11,8 @@ import torch
 from torch import Tensor, nn
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import AdamW, Optimizer
+import re
+
 
 from dafny_file import Dafny
 from data_types import GrpoConfig, Response
@@ -24,14 +26,15 @@ from verification_task import (
     deletion_reward_function,
     format_reward_function,
     get_generated_dafny_code,
+    SYSTEM_MESSAGE,
+    USER_TEMPLATE,
     verification_reward_function,
 )
 
 try:
-    from torch.cuda.amp import GradScaler, autocast
+    from torch.cuda.amp import GradScaler
 except ImportError:  # pragma: no cover - CPU-only environments
     GradScaler = None  # type: ignore
-    autocast = None  # type: ignore
 
 
 RewardFn = Callable[[str, str, Mapping[str, Any]], Tuple[float, Dict[str, Any]]]
@@ -240,15 +243,18 @@ class CustomRLTrainer:
             return Minibatch(prompts=[], prompt_tokens=[], prompt_token_ids=[]), []
 
         selected = self._rng.sample(dataset, batch_size)
+        raw_prompts: List[str] = []
         prompts: List[str] = []
         prompt_token_ids: List[List[int]] = []
 
         for item in selected:
-            prompt = self._extract_prompt(item)
-            prompts.append(prompt)
+            raw_prompt = self._extract_prompt(item)
+            formatted_prompt = self._format_prompt(raw_prompt)
+            raw_prompts.append(raw_prompt)
+            prompts.append(formatted_prompt)
 
             encoded = self.tokenizer(
-                prompt, add_special_tokens=True, return_tensors=None, 
+                formatted_prompt, add_special_tokens=True, return_tensors=None,
             )
             ids = encoded["input_ids"]
             if isinstance(ids, torch.Tensor):
@@ -260,9 +266,15 @@ class CustomRLTrainer:
             prompt_tokens=[],
             prompt_token_ids=prompt_token_ids,
         )
-        metadata: List[Mapping[str, Any]] = [
-            item if isinstance(item, Mapping) else {} for item in selected
-        ]
+        metadata: List[Mapping[str, Any]] = []
+        for idx, item in enumerate(selected):
+            meta: Dict[str, Any]
+            if isinstance(item, Mapping):
+                meta = dict(item)
+            else:
+                meta = {}
+            meta.setdefault("original_code", raw_prompts[idx])
+            metadata.append(meta)
         return minibatch, metadata
 
     def _collect_rollouts(
@@ -278,6 +290,8 @@ class CustomRLTrainer:
             return rollouts
 
         for prompt_idx, prompt in enumerate(minibatch.prompts):
+            print(f"Collecting rollouts for prompt {prompt_idx} of {len(minibatch.prompts)}")
+            print(f"Prompt: {prompt}")
             prompt_ids = minibatch.prompt_token_ids[prompt_idx]
             prompt_tensor = torch.tensor(
                 prompt_ids, dtype=torch.long, device=self.device
@@ -288,42 +302,29 @@ class CustomRLTrainer:
                 prompt_attention_mask = torch.ones_like(prompt_tensor, dtype=torch.long)
 
             for _ in range(self.config.group_size):
-                autocast_context = (
-                    autocast()  # type: ignore[operator]
-                    if (
-                        autocast is not None
-                        and self.config.mixed_precision
-                        and self.device.type == "cuda"
-                    )
-                    else _NullContext()
-                )
                 with torch.no_grad():
-                    with autocast_context:
-                        generated = self.old_model.generate(
-                            input_ids=prompt_tensor,
-                            attention_mask=prompt_attention_mask,
-                            max_new_tokens=self.config.max_new_tokens,
-                            temperature=self.config.temperature,
-                            top_p=self.config.top_p,
-                            do_sample=True,
-                            pad_token_id=pad_token_id,
-                            eos_token_id=eos_token_id,
-                            return_dict_in_generate=False,
-                            output_scores=False,
-                        )
+                    generated = self.old_model.generate(
+                        input_ids=prompt_tensor,
+                        attention_mask=prompt_attention_mask,
+                        max_new_tokens=self.config.max_new_tokens,
+                        temperature=self.config.temperature,
+                        top_p=self.config.top_p,
+                        do_sample=True,
+                        pad_token_id=pad_token_id,
+                        eos_token_id=eos_token_id,
+                        return_dict_in_generate=False,
+                        output_scores=False,
+                    )
 
                 generated_ids = generated[0].tolist()
                 completion_ids = generated_ids[len(prompt_ids) :]
-                if eos_token_id is not None and (
-                    not completion_ids or completion_ids[-1] != eos_token_id
-                ):
-                    completion_ids.append(eos_token_id)
 
                 completion_text = self.tokenizer.decode(
-                    completion_ids, skip_special_tokens=False
+                    completion_ids, skip_special_tokens=True
                 )
+                print(f"Completion text: {completion_text}")
                 full_text = self.tokenizer.decode(
-                    generated_ids, skip_special_tokens=False
+                    generated_ids, skip_special_tokens=True
                 )
 
                 response = Response(
@@ -341,9 +342,6 @@ class CustomRLTrainer:
                     reward_components={},
                 )
                 rollouts.append(RolloutItem(response=response, metadata=metadata[prompt_idx]))
-
-            if self.device.type == "cuda":
-                torch.cuda.empty_cache()
 
         return rollouts
 
@@ -651,6 +649,27 @@ class CustomRLTrainer:
         if count == 0:
             return {}
         return {key: value / count for key, value in accumulator.items()}
+
+    def _format_prompt(self, prompt: str) -> str:
+        system_text = SYSTEM_MESSAGE.strip()
+        user_text = USER_TEMPLATE.format(dafny_code_snippet=prompt).strip()
+
+        if hasattr(self.tokenizer, "apply_chat_template"):
+            messages = [
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_text},
+            ]
+            try:
+                return self.tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+            except TypeError:
+                # Some tokenizers may have a different signature; fall back to manual formatting.
+                pass
+
+        return f"{system_text}\n\n{user_text}"
 
     def _extract_prompt(self, item: Any) -> str:
         if isinstance(item, Mapping):
