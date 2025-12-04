@@ -219,13 +219,13 @@ class CustomRLTrainer:
                 print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
 
                 print(f"Whitened advantages")
-            policy_batch = self._build_policy_batch(rollouts, normalized)
+            policy_batches = self._build_policy_batch(rollouts, normalized)
 
             print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
             print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
             
             print(f"Built policy batch")
-            update_metrics = self._update_policy(policy_batch)
+            update_metrics = self._update_policy(policy_batches)
             print(f"Updated policy")
             reward_metrics = self._summarize_rewards(rollouts)
             print(f"Summarized rewards")
@@ -417,7 +417,7 @@ class CustomRLTrainer:
 
     def _build_policy_batch(
         self, rollouts: List[RolloutItem], advantages: List[float]
-    ) -> PolicyBatch:
+    ) -> List[PolicyBatch]:
         pad_token_id = getattr(self.tokenizer, "pad_token_id", 0) or 0
 
         sequences: List[List[int]] = []
@@ -428,60 +428,87 @@ class CustomRLTrainer:
             sequences.append(prompt_ids + completion_ids)
             prompt_lengths.append(len(prompt_ids))
 
-        max_len = max(len(seq) for seq in sequences)
-        batch_size = len(sequences)
+        if not sequences:
+            return []
 
-        input_ids = torch.full(
-            (batch_size, max_len),
-            pad_token_id,
-            dtype=torch.long,
-            device=self.device,
-        )
-        attention_mask = torch.zeros_like(input_ids)
-        target_mask = torch.zeros_like(input_ids, dtype=torch.float32)
+        policy_microbatch_size = self.config.microbatch_size
+        if policy_microbatch_size is None or policy_microbatch_size <= 0:
+            policy_microbatch_size = len(sequences)
 
-        for idx, seq in enumerate(sequences):
-            length = len(seq)
-            seq_tensor = torch.tensor(seq, dtype=torch.long, device=self.device)
-            input_ids[idx, :length] = seq_tensor
-            attention_mask[idx, :length] = 1
-            target_mask[idx, prompt_lengths[idx] : length] = 1.0
+        policy_batches: List[PolicyBatch] = []
+        for start in range(0, len(sequences), policy_microbatch_size):
+            end = min(start + policy_microbatch_size, len(sequences))
+            chunk_sequences = sequences[start:end]
+            chunk_prompt_lengths = prompt_lengths[start:end]
+            chunk_advantages = advantages[start:end]
 
-        advantages_tensor = torch.tensor(
-            advantages, dtype=torch.float32, device=self.device
-        )
+            chunk_max_len = max(len(seq) for seq in chunk_sequences)
+            if chunk_max_len == 0:
+                continue
 
-        with torch.no_grad():
-            old_log_probs, _ = self._compute_log_probs(
-                self.old_model,
-                input_ids,
-                attention_mask,
-                target_mask,
-                requires_grad=False,
+            input_ids = torch.full(
+                (len(chunk_sequences), chunk_max_len),
+                pad_token_id,
+                dtype=torch.long,
+                device=self.device,
+            )
+            attention_mask = torch.zeros_like(input_ids)
+            target_mask = torch.zeros_like(input_ids, dtype=torch.float32)
+
+            for idx, seq in enumerate(chunk_sequences):
+                length = len(seq)
+                if length == 0:
+                    continue
+                seq_tensor = torch.tensor(seq, dtype=torch.long, device=self.device)
+                input_ids[idx, :length] = seq_tensor
+                attention_mask[idx, :length] = 1
+                target_mask[idx, chunk_prompt_lengths[idx] : length] = 1.0
+
+            advantages_tensor = torch.tensor(
+                chunk_advantages, dtype=torch.float32, device=self.device
             )
 
-        return PolicyBatch(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            target_mask=target_mask,
-            advantages=advantages_tensor,
-            old_log_probs=old_log_probs,
-        )
+            with torch.no_grad():
+                old_log_probs, _ = self._compute_log_probs(
+                    self.old_model,
+                    input_ids,
+                    attention_mask,
+                    target_mask,
+                    requires_grad=False,
+                )
+
+            policy_batches.append(
+                PolicyBatch(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    target_mask=target_mask,
+                    advantages=advantages_tensor,
+                    old_log_probs=old_log_probs,
+                )
+            )
+
+        return policy_batches
 
     # --------------------------------------------------------------------- #
     # Policy Update
     # --------------------------------------------------------------------- #
-    def _update_policy(self, policy_batch: PolicyBatch) -> Dict[str, float]:
+    def _update_policy(
+        self, policy_batches: Sequence[PolicyBatch]
+    ) -> Dict[str, float]:
+        if not policy_batches:
+            return {}
+
         metrics_accumulator: Dict[str, float] = {}
         grad_accum_steps = max(1, self.config.gradient_accumulation_steps)
         num_epochs = max(1, self.config.num_ppo_epochs)
 
-        micro_batches = [policy_batch]
         accumulation_step = 0
         self.optimizer.zero_grad()
 
         for epoch in range(num_epochs):
-            for micro in micro_batches:
+            for micro in policy_batches:
+                if micro.input_ids.numel() == 0:
+                    continue
                 policy_log_probs, policy_logits = self._compute_log_probs(
                     self.policy_model,
                     micro.input_ids,
@@ -531,6 +558,20 @@ class CustomRLTrainer:
                     step_metrics["grad_norm"] = grad_norm
 
                 self._accumulate_metrics(metrics_accumulator, step_metrics)
+
+        if accumulation_step % grad_accum_steps != 0:
+            grad_norm = self._clip_gradients(self.policy_model)
+            if self.scaler:
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                self.optimizer.step()
+
+            if self.scheduler:
+                self.scheduler.step()
+
+            self.optimizer.zero_grad()
+            self._accumulate_metrics(metrics_accumulator, {"grad_norm": grad_norm})
 
         return self._finalize_metrics(metrics_accumulator)
 

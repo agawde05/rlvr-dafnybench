@@ -65,6 +65,7 @@ def main() -> None:
 
     config = GrpoConfig(
         batch_size=8,
+        microbatch_size=2,
         group_size=4,
         num_ppo_epochs=4,
         max_new_tokens=128,

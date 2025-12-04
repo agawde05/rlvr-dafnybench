@@ -40,6 +40,10 @@ class GrpoConfig:
             "help": "Completions sampled per question (G) for group-relative reward normalization."
         },
     )
+    microbatch_size: int = field(
+        default=8,
+        metadata={"help": "Number of completions per microbatch."},
+    )
     max_new_tokens: int = field(
         default=512,
         metadata={"help": "Maximum number of tokens to generate per completion."},
