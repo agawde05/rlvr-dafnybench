@@ -193,14 +193,34 @@ class CustomRLTrainer:
             if not rollouts:
                 continue
 
+                        
+            print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+            print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+
             self._score_rollouts(rollouts)
+
+            print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+            print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+
             print(f"Scored rollouts")
             normalized = self._normalize_rewards(rollouts)
+
+            print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+            print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+
             print(f"Normalized rewards")
             if self.config.advantage_whitening:
                 normalized = self._whiten_advantages(normalized)
+
+                print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+                print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+
                 print(f"Whitened advantages")
             policy_batch = self._build_policy_batch(rollouts, normalized)
+
+            print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+            print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+            
             print(f"Built policy batch")
             update_metrics = self._update_policy(policy_batch)
             print(f"Updated policy")
@@ -291,6 +311,8 @@ class CustomRLTrainer:
 
         for prompt_idx, prompt in enumerate(minibatch.prompts):
             print(f"Collecting rollouts for prompt {prompt_idx} of {len(minibatch.prompts)}")
+            print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+            print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
             prompt_ids = minibatch.prompt_token_ids[prompt_idx]
             prompt_tensor = torch.tensor(
                 prompt_ids, dtype=torch.long, device=self.device
@@ -317,10 +339,6 @@ class CustomRLTrainer:
                 )
 
             sequences = generated.sequences.tolist()
-
-            del generated # free memory i think
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
 
             for _ in range(self.config.group_size):
 

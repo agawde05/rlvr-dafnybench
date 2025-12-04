@@ -29,7 +29,6 @@ def build_verification_reward(dafny_binary: Path) -> RewardFn:
         try:
             dafny_file: DafnyFile = get_generated_dafny_code(completion)
         except ValueError:
-            print(f"Error: Missing <answer> tags in completion")
             # Missing <answer> tags → no verification, but return formatting score.
             format_score = format_reward_function(completion)
             components = {
@@ -53,7 +52,6 @@ def build_verification_reward(dafny_binary: Path) -> RewardFn:
             "assume": float(assume_score),
             "deletion": float(deletion_score),
         }
-        print(f"Components: {components}")
 
         # Main scalar reward is verification; other components are logged for analysis.
         return float(verification_score), components
