@@ -27,6 +27,7 @@ def build_verification_reward(dafny_binary: Path) -> RewardFn:
         prompt: str, completion: str, metadata: Dict[str, Any]
     ) -> Tuple[float, Dict[str, Any]]:
         try:
+            print(f"Completion: {completion}")
             dafny_file: DafnyFile = get_generated_dafny_code(completion)
         except ValueError:
             # Missing <answer> tags → no verification, but return formatting score.
@@ -41,7 +42,7 @@ def build_verification_reward(dafny_binary: Path) -> RewardFn:
 
         generated_code = dafny_file.get_code() or ""
         original_code = metadata.get("original_code", prompt)
-
+        print(f"Generated code: {generated_code}")
         verification_score = verification_reward_function(dafny_file, dafny)
         format_score = format_reward_function(completion)
         assume_score = assume_reward_function(original_code, generated_code)

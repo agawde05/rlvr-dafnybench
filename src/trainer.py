@@ -300,22 +300,27 @@ class CustomRLTrainer:
             else:
                 prompt_attention_mask = torch.ones_like(prompt_tensor, dtype=torch.long)
 
-            for _ in range(self.config.group_size):
-                with torch.no_grad():
-                    generated = self.old_model.generate(
-                        input_ids=prompt_tensor,
-                        attention_mask=prompt_attention_mask,
-                        max_new_tokens=self.config.max_new_tokens,
-                        temperature=self.config.temperature,
-                        top_p=self.config.top_p,
-                        do_sample=True,
-                        pad_token_id=pad_token_id,
-                        eos_token_id=eos_token_id,
-                        return_dict_in_generate=False,
-                        output_scores=False,
-                    )
+            batch_input = prompt_tensor.repeat(self.config.group_size, 1)
 
-                generated_ids = generated[0].tolist()
+            with torch.no_grad():
+                generated = self.old_model.generate(
+                    input_ids=batch_input,
+                    attention_mask=prompt_attention_mask,
+                    max_new_tokens=self.config.max_new_tokens,
+                    temperature=self.config.temperature,
+                    top_p=self.config.top_p,
+                    do_sample=True,
+                    pad_token_id=pad_token_id,
+                    eos_token_id=eos_token_id,
+                    return_dict_in_generate=False,
+                    output_scores=False,
+                )
+
+            sequences = generated.sequences.tolist()
+
+            for _ in range(self.config.group_size):
+
+                generated_ids = sequences[_]
                 completion_ids = generated_ids[len(prompt_ids) :]
 
                 completion_text = self.tokenizer.decode(
