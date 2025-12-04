@@ -518,11 +518,10 @@ class CustomRLTrainer:
                     )
                     print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
                     print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
-                    logits = outputs.logits
+                    logits = outputs.logits.detach()
+                    del outputs
                     if logits.dtype != torch.float32:
                         logits = logits.float()
-
-                    torch.cuda.empty_cache()
 
                     per_token_loss = F.cross_entropy(
                         logits.reshape(-1, logits.size(-1)),
