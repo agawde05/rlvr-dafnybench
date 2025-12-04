@@ -55,7 +55,7 @@ def load_dafnybench_data(split: str = "test") -> pl.DataFrame:
     if "spec" not in df.columns:
         df = df.with_columns(pl.lit(None, dtype=pl.Utf8).alias("spec"))
 
-    df = _ensure_unimplemented_column(df)
+    # df = _ensure_unimplemented_column(df)
 
     return df
 
@@ -69,7 +69,8 @@ def save_dafnybench_data(data: pl.DataFrame, save_path: Path = DEFAULT_SAVE_PATH
 def load_saved_dafnybench_data(load_path: Path = DEFAULT_SAVE_PATH) -> pl.DataFrame:
     """Loads the DafnyBench dataset from a Parquet file."""
     df = pl.read_parquet(load_path)
-    return _ensure_unimplemented_column(df)
+    return df
+    # return _ensure_unimplemented_column(df)
 
 
 if __name__ == "__main__":
