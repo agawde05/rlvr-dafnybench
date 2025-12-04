@@ -312,7 +312,7 @@ class CustomRLTrainer:
                     do_sample=True,
                     pad_token_id=pad_token_id,
                     eos_token_id=eos_token_id,
-                    return_dict_in_generate=False,
+                    return_dict_in_generate=True,
                     output_scores=False,
                 )
 
@@ -334,6 +334,7 @@ class CustomRLTrainer:
                 response = Response(
                     prompt=prompt,
                     full_text=full_text,
+                    completion_text=completion_text,
                     prompt_token_ids=prompt_ids,
                     prompt_tokens=[],
                     generated_token_ids=completion_ids,
@@ -356,7 +357,7 @@ class CustomRLTrainer:
         for item in rollouts:
             response = item.response
             reward, components = self.reward_fn(
-                response.prompt, response.full_text, item.metadata
+                response.prompt, response.completion_text, item.metadata
             )
             response.reward = float(reward)
             response.reward_components = components

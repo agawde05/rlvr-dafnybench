@@ -11,6 +11,7 @@ class Response:
 
     prompt: str  # Input prompt text
     full_text: str  # prompt + generation
+    completion_text: str  # generation only
     prompt_token_ids: TokenIds  # Tokenized prompt
     prompt_tokens: Tokens  # Prompt tokens (for debugging)
     generated_token_ids: TokenIds  # Generated tokens only
