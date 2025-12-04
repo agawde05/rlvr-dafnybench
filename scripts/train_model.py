@@ -65,11 +65,11 @@ def main() -> None:
 
     config = GrpoConfig(
         batch_size=8,
-        microbatch_size=2,
+        microbatch_size=1,
         group_size=4,
         num_epochs=4,
         max_new_tokens=128,
-        learning_rate=1e-6,
+        learning_rate=1e-5,
         advantage_whitening=True,
         mixed_precision=True,
     )
@@ -84,7 +84,7 @@ def main() -> None:
 
     print("Starting training...")
 
-    trainer.train(dataset, num_steps=1, checkpoint_dir="checkpoints")
+    trainer.train(dataset, num_steps=10, checkpoint_dir="checkpoints")
 
 
 if __name__ == "__main__":

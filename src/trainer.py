@@ -185,51 +185,28 @@ class CustomRLTrainer:
         for i in range(num_steps):
             print(f"Step {i} of {num_steps}")
             minibatch, metadata = self._sample_minibatch(dataset)
-            print(f"Sampled minibatch")
             if not minibatch.prompts:
                 continue
 
             rollouts = self._collect_rollouts(minibatch, metadata)
-            print(f"Collected rollouts")
             if not rollouts:
                 continue
 
             torch.cuda.empty_cache()
-                        
-            print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-            print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
 
             self._score_rollouts(rollouts)
 
-            print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-            print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
-
-            print(f"Scored rollouts")
             normalized = self._normalize_rewards(rollouts)
 
-            print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-            print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
-
-            print(f"Normalized rewards")
             if self.config.advantage_whitening:
                 normalized = self._whiten_advantages(normalized)
 
-                print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-                print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
-
-                print(f"Whitened advantages")
             policy_batches = self._build_policy_batch(rollouts, normalized)
 
             torch.cuda.empty_cache()
-
-            print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-            print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
             
-            print(f"Built policy batch")
             update_metrics = self._update_policy(policy_batches)
-            print(f"Updated policy")
             reward_metrics = self._summarize_rewards(rollouts)
-            print(f"Summarized rewards")
             metrics = {**reward_metrics, **update_metrics, "step": self._step}
 
             if self._step % self.config.log_freq == 0:
@@ -309,9 +286,6 @@ class CustomRLTrainer:
             return rollouts
 
         for prompt_idx, prompt in enumerate(minibatch.prompts):
-            print(f"Collecting rollouts for prompt {prompt_idx} of {len(minibatch.prompts)}")
-            print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-            print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
             prompt_ids = minibatch.prompt_token_ids[prompt_idx]
             prompt_tensor = torch.tensor(
                 prompt_ids, dtype=torch.long, device=self.device
@@ -513,16 +487,10 @@ class CustomRLTrainer:
 
             with self._autocast_context():
 
-                print(f"prev Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-                print(f"prev Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
-
                 outputs = self.policy_model(
                     input_ids=input_token_ids,
                     attention_mask=attention_for_model,
                 )
-
-                print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-                print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
 
                 logits = outputs.logits
 
