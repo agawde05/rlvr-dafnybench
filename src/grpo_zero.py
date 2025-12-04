@@ -103,7 +103,7 @@ def rollout_batch(
         config: Configuration containing group_size, max_new_tokens, etc.
         tokenizer: Tokenizer for encoding/decoding.
         reward_fn: Function that computes reward for a completion.
-            Signature: reward_fn(prompt: str, completion: str) -> (float, Dict)
+            Signature: reward_fn(prompt: str, completion: str, metadata: Dict) -> (float, Dict)
 
     Returns:
         List of B*G Response objects, grouped by question.
@@ -183,7 +183,11 @@ def rollout_batch(
             )
             full_text = tokenizer.decode(full_ids, skip_special_tokens=False)
 
-            reward, components = reward_fn(prompt, completion_text)
+            rollout_metadata: Dict[str, Any] = {
+                "original_code": prompt,
+                "diff_json": completion_text,
+            }
+            reward, components = reward_fn(prompt, completion_text, rollout_metadata)
             components = components or {}
 
             responses.append(

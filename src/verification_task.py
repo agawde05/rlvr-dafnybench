@@ -1,30 +1,46 @@
 import re
+from typing import Mapping, Any
+
 from dafny_file import DafnyFile, Dafny
+from diff_merger import DiffMergeError, merge_diff, validate_diff_json
 
 SYSTEM_MESSAGE = """You are an LLM specialized in formal verification. 
-Your task is to take existing Dafny code and produce a fully annotated version 
-that enables the Dafny verifier to prove total correctness.
+Your task is to take existing Dafny code and produce the minimal, fully annotated
+changes required for the Dafny verifier to prove total correctness.
 
 You MUST:
 - Add assert statements, loop invariants, decreases clauses, pre/postconditions,
   frame specifications, and any auxiliary lemmas necessary for verification.
 - Preserve the structure of the original program unless correctness requires a
-  modification--at which point you should comment what was changed.
-- Never delete user-provided logic unless it is provably dead or contradictory--
-  if such a situation arises, comment out the code as opposed to deleting it.
-- Produce ENTIRE updated Dafny file verbatim.
+  modification. Justify removals by replacing them with equivalent commented code.
+- Return your modifications as a structured diff rather than the full file.
 
 STRICT FORMAT:
 You MUST think inside <think>...</think> tags.
 Your final output MUST appear ONLY inside <answer>...</answer> tags.
-No commentary, no explanations, no meta text in the final answer.
+No commentary, no explanations, no meta text outside the required tags.
 
 ABSOLUTE RULES FOR <answer>:
-- The content inside <answer> MUST be PURE Dafny code.
-- NO markdown. NO code fences. NO ``` blocks.
-- NO natural language. NO explanations. NO comments of any kind.
-- NO text before <answer> and NO text after </answer>.
-- The content MUST be syntactically valid Dafny.
+- The content inside <answer> MUST be valid JSON describing Git-style hunks:
+  {
+    "hunks": [
+      {
+        "original_start": 12,
+        "original_length": 3,
+        "patched_start": 12,
+        "patched_length": 4,
+        "lines": [
+          {"type": "context", "text": "unchanged line"},
+          {"type": "remove", "text": "old line"},
+          {"type": "add", "text": "new line"}
+        ]
+      }
+    ]
+  }
+- Line numbers are 1-indexed. `text` entries MUST omit trailing newline characters.
+- Only the keys shown above are permitted; do not include summaries or comments.
+- If no changes are required, output {"hunks": []}.
+- NO markdown. NO ``` fences. NO natural language. NO comments.
 
 <think> is hidden from the user in deployment but will be visible during training.
 Inside <think> you must:
@@ -33,7 +49,7 @@ Inside <think> you must:
 - plan modifications that guarantee termination and correctness.
 
 Inside <answer> you must:
-- output the full final Dafny code file, fully annotated and syntactically valid.
+- output the JSON diff adhering strictly to the schema above.
 
 All invariants must be strong enough for Dafny to verify.
 All modifications must preserve semantic meaning.
@@ -52,10 +68,10 @@ Insert all necessary:
 - auxiliary lemmas (only if needed)
 - datatype or function constraints
 
-Return the entire resulting file.
+Return ONLY the JSON diff describing the changes, following the system schema.
 
 Follow the system instructions exactly.
-Use <think> for chain-of-thought and <answer> for the final code.
+Use <think> for chain-of-thought and <answer> for the final JSON diff.
 
 ----- BEGIN INPUT CODE -----
 {dafny_code_snippet}
@@ -77,33 +93,51 @@ def format_reward_function(response: str) -> float:
     """
     think_regex = r"<think>(.*?)</think>"
     answer_regex = r"<answer>(.*?)</answer>"
-    full_format = r"<think>(.*?)</think>\n<answer>(.*?)</answer>$"
-
-    match_full = re.search(full_format, response, re.DOTALL)
-
-    if match_full:
-        return 1.0
+    full_format = r"<think>(.*?)</think>\s*<answer>(.*?)</answer>$"
 
     match_think = re.search(think_regex, response, re.DOTALL)
     match_answer = re.search(answer_regex, response, re.DOTALL)
+    match_full = re.search(full_format, response, re.DOTALL)
 
     reward = 0.0
     if match_think:
-        reward += 0.1
+        reward += 0.2
     if match_answer:
-        reward += 0.7
-    return reward
+        reward += 0.3
+
+    if not match_answer:
+        return reward
+
+    diff_blob = match_answer.group(1).strip()
+    if not diff_blob:
+        return reward
+
+    if validate_diff_json(diff_blob):
+        return 1.0
+
+    # Provide partial credit when structure begins correctly.
+    if match_full:
+        reward += 0.2
+    return min(reward, 0.9)
 
 
-def get_generated_dafny_code(response: str) -> DafnyFile:
-    """Extracts the generated Dafny code from the LLM response."""
+def get_generated_dafny_code(response: str, original_code: str) -> DafnyFile:
+    """Extracts Dafny code from a JSON diff by merging with `original_code`."""
     answer_regex = r"<answer>(.*?)</answer>"
     match_answer = re.search(answer_regex, response, re.DOTALL)
     if not match_answer:
         raise ValueError("No <answer> tags found in the response.")
 
-    generated_code = match_answer.group(1).strip()
-    return DafnyFile.from_code(generated_code)
+    diff_blob = match_answer.group(1).strip()
+    if not diff_blob:
+        raise ValueError("Diff payload inside <answer> is empty.")
+
+    try:
+        merged_code = merge_diff(original_code, diff_blob)
+    except DiffMergeError as exc:
+        raise ValueError(f"Failed to merge diff JSON: {exc}") from exc
+
+    return DafnyFile.from_code(merged_code)
 
 
 def assume_reward_function(original_code: str, modified_code: str) -> float:

@@ -353,6 +353,9 @@ class CustomRLTrainer:
                     generated_ids, skip_special_tokens=True
                 )
 
+                rollout_metadata = dict(metadata[prompt_idx])
+                rollout_metadata["diff_json"] = completion_text
+
                 response = Response(
                     prompt=prompt,
                     full_text=full_text,
@@ -368,7 +371,7 @@ class CustomRLTrainer:
                     reward=0.0,
                     reward_components={},
                 )
-                rollouts.append(RolloutItem(response=response, metadata=metadata[prompt_idx]))
+                rollouts.append(RolloutItem(response=response, metadata=rollout_metadata))
 
         return rollouts
 
@@ -723,7 +726,7 @@ class CustomRLTrainer:
             modified_code = ""
 
             try:
-                dafny_file = get_generated_dafny_code(completion)
+                dafny_file = get_generated_dafny_code(completion, original_code)
                 modified_code = dafny_file.get_code() or ""
                 if self.dafny:
                     verification_score = verification_reward_function(
