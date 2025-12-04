@@ -433,7 +433,7 @@ class CustomRLTrainer:
         if not sequences:
             return []
 
-        sequences.sort(key=lambda x: len(x[0]))
+        sequences.sort(key=lambda x: len(x[0])) # efficient micro batching
         micro_size = self.config.microbatch_size or len(sequences)
 
         batches: List[PolicyBatch] = []
@@ -517,6 +517,8 @@ class CustomRLTrainer:
                         input_ids=input_token_ids,
                         attention_mask=attention_for_model,
                     )
+                    print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+                    print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
                     logits = outputs.logits
                     if logits.dtype != torch.float32:
                         logits = logits.float()
