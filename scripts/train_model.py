@@ -53,7 +53,7 @@ def _prepare_prompts(split: str = "test") -> List[str]:
 def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
-    model_name = "Qwen/Qwen2.5-1.5B-Instruct-GPTQ-Int4"
+    model_name = "Qwen/Qwen2.5-1.5B-Instruct"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16)
 
