@@ -511,6 +511,8 @@ class CustomRLTrainer:
                 attention_for_model = attention_mask[:, :-1]
                 target_token_mask = target_mask[:, 1:]
 
+                print(self._autocast_context())
+
                 with self._autocast_context():
 
                     print(f"prev Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
@@ -548,7 +550,7 @@ class CustomRLTrainer:
 
                 loss = loss / grad_accum_steps
                 loss.backward()
-                del loss, objective, token_log_probs, advantages_expanded
+                del loss, objective, logits, token_log_probs, objective, advantages_expanded
                 torch.cuda.empty_cache()
 
                 accumulation_step += 1
