@@ -351,7 +351,7 @@ class CustomRLTrainer:
                 completion_text = self.tokenizer.decode(
                     completion_ids, skip_special_tokens=True
                 )
-                print(f"Completed text")
+                print(f"Completion text: {completion_text}")
                 full_text = self.tokenizer.decode(
                     generated_ids, skip_special_tokens=True
                 )
@@ -488,10 +488,7 @@ class CustomRLTrainer:
                     micro.attention_mask,
                     micro.target_mask,
                     requires_grad=True,
-                    return_logits=True,
                 )
-                if policy_logits is None:
-                    raise RuntimeError("Expected logits when return_logits=True.")
 
                 with torch.no_grad():
                     ref_log_probs, _ = self._compute_log_probs(
@@ -586,54 +583,27 @@ class CustomRLTrainer:
         attention_mask: Tensor,
         target_mask: Tensor,
         requires_grad: bool,
-        *,
-        return_logits: bool = False,
-    ) -> Tuple[Tensor, Optional[Tensor]]:
-        batch_size = input_ids.size(0)
-        micro = self.config.log_prob_microbatch_size
-        if micro is None or micro <= 0:
-            # Heuristic: default to small micro-batches to cap peak memory.
-            micro = max(1, min(batch_size, 4))
+    ) -> Tuple[Tensor, Tensor]:
+        context = torch.enable_grad() if requires_grad else torch.no_grad()
+        with context:
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+            )
+            logits: Tensor = outputs.logits
+            log_probs = torch.log_softmax(logits, dim=-1)
 
-        token_log_prob_chunks: List[Tensor] = []
-        logits_chunks: List[Tensor] = []
+        shifted_input = input_ids[:, 1:]
+        shifted_log_probs = log_probs[:, :-1, :]
+        gathered = torch.gather(
+            shifted_log_probs,
+            dim=2,
+            index=shifted_input.unsqueeze(-1),
+        ).squeeze(-1)
 
-        for start in range(0, batch_size, micro):
-            end = min(start + micro, batch_size)
-            chunk_input = input_ids[start:end]
-            chunk_attention = attention_mask[start:end]
-            chunk_mask = target_mask[start:end]
-
-            context = torch.enable_grad() if requires_grad else torch.no_grad()
-            with context:
-                outputs = model(
-                    input_ids=chunk_input,
-                    attention_mask=chunk_attention,
-                )
-                chunk_logits: Tensor = outputs.logits
-                log_probs = torch.log_softmax(chunk_logits, dim=-1)
-
-            shifted_input = chunk_input[:, 1:]
-            shifted_log_probs = log_probs[:, :-1, :]
-            gathered = torch.gather(
-                shifted_log_probs,
-                dim=2,
-                index=shifted_input.unsqueeze(-1),
-            ).squeeze(-1)
-
-            chunk_token_log_probs = torch.zeros_like(chunk_input, dtype=log_probs.dtype)
-            chunk_token_log_probs[:, 1:] = gathered
-            mask = chunk_mask.to(chunk_token_log_probs.dtype)
-            chunk_token_log_probs = chunk_token_log_probs * mask
-            token_log_prob_chunks.append(chunk_token_log_probs)
-
-            if return_logits:
-                logits_chunks.append(chunk_logits)
-
-            del log_probs, shifted_log_probs, gathered
-
-        token_log_probs = torch.cat(token_log_prob_chunks, dim=0)
-        logits = torch.cat(logits_chunks, dim=0) if return_logits else None
+        token_log_probs = torch.zeros_like(input_ids, dtype=log_probs.dtype)
+        token_log_probs[:, 1:] = gathered
+        token_log_probs = token_log_probs * target_mask
         return token_log_probs, logits
 
     def _compute_entropy(self, logits: Tensor, target_mask: Tensor) -> Tensor:
