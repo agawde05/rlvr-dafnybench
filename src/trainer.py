@@ -424,7 +424,7 @@ class CustomRLTrainer:
         for item in rollouts:
             prompt_ids = list(item.response.prompt_token_ids)
             completion_ids = list(item.response.generated_token_ids)
-            sequences.append(prompt_ids + completion_ids)
+            sequences.append(completion_ids)
             prompt_lengths.append(len(prompt_ids))
 
         max_len = max(len(seq) for seq in sequences)
@@ -590,11 +590,9 @@ class CustomRLTrainer:
                 input_ids=input_ids,
                 attention_mask=attention_mask,
             )
-            tensor_info("outputs", outputs)
             logits: Tensor = outputs.logits
-            tensor_info("logits", logits)
             log_probs = torch.log_softmax(logits, dim=-1)
-            tensor_info("log_probs", log_probs)
+
         shifted_input = input_ids[:, 1:]
         shifted_log_probs = log_probs[:, :-1, :]
         gathered = torch.gather(

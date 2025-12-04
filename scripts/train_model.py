@@ -67,7 +67,7 @@ def main() -> None:
         batch_size=8,
         group_size=4,
         num_ppo_epochs=4,
-        max_new_tokens=256,
+        max_new_tokens=128,
         learning_rate=1e-6,
         advantage_whitening=True,
         mixed_precision=True,
