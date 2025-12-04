@@ -15,7 +15,9 @@ The algorithm maintains three models:
 Training uses PPO-style clipped objectives with per-group advantage normalization.
 """
 
+import copy
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Tuple, Dict, Optional, Any
 import torch
 import torch.nn as nn
@@ -144,6 +146,64 @@ def rollout_batch(
         - Breaks early when all sequences in batch have finished.
         - Reward computation is environment-based (verification task).
     """
+
+    responses: List[Response] = []
+
+    if len(minibatch.prompts) == 0:
+        return responses
+
+    device = next(model.parameters()).device
+    group_size = max(1, config.group_size)
+    pad_token_id = getattr(tokenizer, "pad_token_id", None)
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+
+    for prompt, prompt_token_ids in zip(
+        minibatch.prompts, minibatch.prompt_token_ids
+    ):
+        input_ids = torch.tensor(
+            [prompt_token_ids], dtype=torch.long, device=device
+        )
+
+        for _ in range(group_size):
+            with torch.no_grad():
+                generated = model.generate(
+                    input_ids=input_ids,
+                    do_sample=True,
+                    max_new_tokens=config.max_new_tokens,
+                    temperature=config.temperature,
+                    top_p=config.top_p,
+                    pad_token_id=pad_token_id,
+                    eos_token_id=eos_token_id,
+                )
+
+            full_ids = generated[0].tolist()
+            completion_ids = full_ids[len(prompt_token_ids) :]
+            completion_text = tokenizer.decode(
+                completion_ids, skip_special_tokens=False
+            )
+            full_text = tokenizer.decode(full_ids, skip_special_tokens=False)
+
+            reward, components = reward_fn(prompt, completion_text)
+            components = components or {}
+
+            responses.append(
+                Response(
+                    prompt=prompt,
+                    full_text=full_text,
+                    prompt_token_ids=prompt_token_ids,
+                    prompt_tokens=[],
+                    generated_token_ids=completion_ids,
+                    is_complete=bool(
+                        eos_token_id
+                        and completion_ids
+                        and completion_ids[-1] == eos_token_id
+                    ),
+                    reward=float(reward),
+                    reward_components=components,
+                )
+            )
+
+    return responses
 
 
 def replicate_prompts(
@@ -390,7 +450,27 @@ def normalize_rewards_per_group(
         - If Ã = 0 (all rewards identical), normalization gives 0 advantage.
         - Responses must be ordered as [q1_g1, ..., q1_gG, q2_g1, ..., qB_gG].
     """
-    pass
+    rewards = [response.reward for response in responses]
+    normalized: List[float] = []
+
+    if group_size <= 0:
+        raise ValueError("group_size must be positive")
+
+    for i in range(0, len(rewards), group_size):
+        group = rewards[i : i + group_size]
+        if not group:
+            continue
+
+        mu = sum(group) / len(group)
+        var = sum((x - mu) ** 2 for x in group) / len(group)
+        std = var ** 0.5
+
+        denom = std if std > 0 else 0.0
+        for r in group:
+            normalized.append((r - mu) / (denom + eps))
+
+    return normalized
+    
 
 
 def whiten_advantages(advantages: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
@@ -419,7 +499,13 @@ def whiten_advantages(advantages: torch.Tensor, eps: float = 1e-8) -> torch.Tens
         - Can help with optimization stability but may reduce signal.
         - Applied after group normalization, not instead of it.
     """
-    pass
+    if advantages.numel() == 0:
+        return advantages
+
+    mu = advantages.mean()
+    std = advantages.std()
+    std = std.clamp_min(eps)
+    return (advantages - mu) / std
 
 
 # ============================================================================
@@ -454,6 +540,27 @@ class PolicyBatch:
     target_mask: torch.Tensor  # [batch_size, seq_len]
     advantages: torch.Tensor  # [batch_size]
     old_log_probs: torch.Tensor  # [batch_size, seq_len]
+
+
+def _token_log_probs_from_logits(
+    logits: torch.Tensor,
+    input_ids: torch.Tensor,
+    target_mask: torch.Tensor,
+) -> torch.Tensor:
+    log_probs = torch.log_softmax(logits, dim=-1)
+    shifted_input = input_ids[:, 1:]
+    shifted_log_probs = log_probs[:, :-1, :]
+    gathered = torch.gather(
+        shifted_log_probs, dim=2, index=shifted_input.unsqueeze(-1)
+    ).squeeze(-1)
+
+    token_log_probs = torch.zeros(
+        input_ids.shape, dtype=log_probs.dtype, device=input_ids.device
+    )
+    token_log_probs[:, 1:] = gathered
+
+    mask = target_mask.to(token_log_probs.dtype)
+    return token_log_probs * mask
 
 
 def build_policy_batches(
@@ -506,7 +613,76 @@ def build_policy_batches(
         - old_log_probs are computed once and cached (not recomputed during PPO epochs).
         - Padding token should not contribute to loss (masked out by target_mask).
     """
-    pass
+    if len(responses) == 0:
+        return []
+
+    if len(responses) != len(normalized_rewards):
+        raise ValueError("responses and normalized_rewards must have equal length")
+
+    pad_token_id = getattr(tokenizer, "pad_token_id", None)
+    if pad_token_id is None:
+        pad_token_id = 0
+
+    device = next(old_model.parameters()).device
+    micro_batch_size = max(1, micro_batch_size)
+
+    episodes: List[Tuple[List[int], int, float]] = []
+    for response, advantage in zip(responses, normalized_rewards):
+        prompt_ids = list(response.prompt_token_ids)
+        completion_ids = list(response.generated_token_ids)
+        sequence = prompt_ids + completion_ids
+        episodes.append((sequence, len(prompt_ids), float(advantage)))
+
+    episodes.sort(key=lambda item: len(item[0]), reverse=True)
+
+    policy_batches: List[PolicyBatch] = []
+    for start in range(0, len(episodes), micro_batch_size):
+        chunk = episodes[start : start + micro_batch_size]
+        if not chunk:
+            continue
+
+        batch_size = len(chunk)
+        max_len = max(len(seq) for seq, _, _ in chunk)
+
+        input_ids = torch.full(
+            (batch_size, max_len),
+            pad_token_id,
+            dtype=torch.long,
+            device=device,
+        )
+        attention_mask = torch.zeros_like(input_ids)
+        target_mask = torch.zeros(
+            (batch_size, max_len), dtype=torch.float32, device=device
+        )
+        advantages = torch.tensor(
+            [adv for _, _, adv in chunk], dtype=torch.float32, device=device
+        )
+
+        for row, (sequence, prompt_len, _) in enumerate(chunk):
+            seq_len = len(sequence)
+            if seq_len == 0:
+                continue
+
+            seq_tensor = torch.tensor(sequence, dtype=torch.long, device=device)
+            input_ids[row, :seq_len] = seq_tensor
+            attention_mask[row, :seq_len] = 1
+            target_mask[row, prompt_len:seq_len] = 1.0
+
+        old_log_probs = compute_old_log_probs(
+            old_model, input_ids, attention_mask, target_mask
+        )
+
+        policy_batches.append(
+            PolicyBatch(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                target_mask=target_mask,
+                advantages=advantages,
+                old_log_probs=old_log_probs,
+            )
+        )
+
+    return policy_batches
 
 
 def compute_old_log_probs(
@@ -559,7 +735,14 @@ def compute_old_log_probs(
         - Must use torch.no_grad() when computing for À_old (not training it).
         - Target prediction: logits at position t predict token at position t+1.
     """
-    pass
+    with torch.no_grad():
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        )
+        logits = outputs.logits
+
+    return _token_log_probs_from_logits(logits, input_ids, target_mask)
 
 
 # ============================================================================
@@ -572,7 +755,7 @@ def compute_policy_log_probs(
     input_ids: torch.Tensor,
     attention_mask: torch.Tensor,
     target_mask: torch.Tensor,
-) -> torch.Tensor:
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute per-token log probabilities under current policy À_¸.
 
@@ -586,7 +769,9 @@ def compute_policy_log_probs(
         target_mask: Mask for completion tokens, shape [batch_size, seq_len].
 
     Returns:
-        Per-token log probabilities, shape [batch_size, seq_len].
+        Tuple of:
+            - Per-token log probabilities, shape [batch_size, seq_len].
+            - Raw logits from the model forward pass.
 
     Tensor Shapes:
         Same as compute_old_log_probs.
@@ -599,7 +784,15 @@ def compute_policy_log_probs(
         - Gradients are enabled (used for backpropagation).
         - Otherwise identical to compute_old_log_probs.
     """
-    pass
+    outputs = model(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+    )
+    logits = outputs.logits
+    token_log_probs = _token_log_probs_from_logits(
+        logits, input_ids, target_mask
+    )
+    return token_log_probs, logits
 
 
 def compute_reference_log_probs(
@@ -635,7 +828,14 @@ def compute_reference_log_probs(
         - Reference model is typically initialized as a copy of À_¸ at start.
         - May be periodically updated (controlled by config.ref_update_freq).
     """
-    pass
+    with torch.no_grad():
+        outputs = ref_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        )
+        logits = outputs.logits
+
+    return _token_log_probs_from_logits(logits, input_ids, target_mask)
 
 
 def compute_entropy(logits: torch.Tensor, target_mask: torch.Tensor) -> torch.Tensor:
@@ -682,7 +882,13 @@ def compute_entropy(logits: torch.Tensor, target_mask: torch.Tensor) -> torch.Te
         - Entropy naturally decreases during training as policy becomes confident.
         - Entropy bonus (config.entropy_coef * entropy) added to loss.
     """
-    pass
+    probs = torch.softmax(logits, dim=-1)
+    log_probs = torch.log_softmax(logits, dim=-1)
+    entropy = -(probs * log_probs).sum(dim=-1)
+
+    mask = target_mask.to(entropy.dtype)
+    total_tokens = mask.sum().clamp_min(1.0)
+    return (entropy * mask).sum() / total_tokens
 
 
 # ============================================================================
@@ -697,6 +903,7 @@ def compute_grpo_loss(
     advantages: torch.Tensor,
     target_mask: torch.Tensor,
     config: GrpoConfig,
+    policy_logits: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
     Compute GRPO-Zero loss with PPO-style clipping and KL penalty.
@@ -794,7 +1001,58 @@ def compute_grpo_loss(
         - All operations must respect target_mask (only use completion tokens).
         - Advantages should already be normalized (group-relative + optional whitening).
     """
-    pass
+    mask = target_mask.to(policy_log_probs.dtype)
+    token_counts = mask.sum(dim=1).clamp_min(1.0)
+
+    # PPO ratio computation
+    log_ratio = (policy_log_probs - old_log_probs) * mask
+    log_ratio_sum = log_ratio.sum(dim=1)
+    ratio = torch.exp(log_ratio_sum / token_counts)
+    clipped_ratio = torch.clamp(
+        ratio, 1.0 - config.clip_ratio, 1.0 + config.clip_ratio
+    )
+
+    unclipped = ratio * advantages
+    clipped = clipped_ratio * advantages
+    policy_obj = torch.minimum(unclipped, clipped)
+    policy_loss = -policy_obj.mean()
+
+    # KL term
+    kl_per_episode = (
+        (policy_log_probs - ref_log_probs) * mask
+    ).sum(dim=1) / token_counts
+    kl_penalty = kl_per_episode.mean()
+
+    # Entropy bonus
+    if policy_logits is not None:
+        entropy = compute_entropy(policy_logits, target_mask)
+    else:
+        entropy = -(
+            (policy_log_probs * mask).sum(dim=1) / token_counts
+        ).mean()
+        if not torch.is_tensor(entropy):
+            entropy = torch.tensor(entropy, dtype=policy_log_probs.dtype)
+
+    loss = (
+        policy_loss
+        + config.kl_coef * kl_penalty
+        - config.entropy_coef * entropy
+    )
+
+    clip_fraction = (ratio - clipped_ratio).abs() > 1e-8
+    clip_fraction = clip_fraction.float().mean()
+    approx_kl = (ratio.log() - (ratio - 1.0)).mean()
+
+    metrics = {
+        "loss": float(loss.detach().cpu()),
+        "policy_loss": float(policy_loss.detach().cpu()),
+        "kl_penalty": float(kl_penalty.detach().cpu()),
+        "entropy": float(entropy.detach().cpu()),
+        "clip_fraction": float(clip_fraction.detach().cpu()),
+        "approx_kl": float(approx_kl.detach().cpu()),
+    }
+
+    return loss, metrics
 
 
 # ============================================================================
@@ -882,7 +1140,75 @@ def update_policy(
         - old_log_probs are cached and don't need recomputation.
         - Only policy_model is trained; old_model and ref_model are frozen.
     """
-    pass
+    if len(policy_batches) == 0:
+        return {}
+
+    policy_model.train()
+    old_model.eval()
+    ref_model.eval()
+
+    num_epochs = max(1, config.num_ppo_epochs)
+    grad_accum_steps = max(1, config.gradient_accumulation_steps)
+
+    metrics_accum: Dict[str, float] = {}
+    metrics_count = 0.0
+    grad_norms: List[float] = []
+
+    optimizer.zero_grad()
+    accumulation_step = 0
+
+    for _ in range(num_epochs):
+        for batch in policy_batches:
+            policy_log_probs, policy_logits = compute_policy_log_probs(
+                policy_model,
+                batch.input_ids,
+                batch.attention_mask,
+                batch.target_mask,
+            )
+            ref_log_probs = compute_reference_log_probs(
+                ref_model,
+                batch.input_ids,
+                batch.attention_mask,
+                batch.target_mask,
+            )
+
+            loss, step_metrics = compute_grpo_loss(
+                policy_log_probs,
+                batch.old_log_probs,
+                ref_log_probs,
+                batch.advantages,
+                batch.target_mask,
+                config,
+                policy_logits=policy_logits,
+            )
+
+            loss = loss / grad_accum_steps
+            loss.backward()
+
+            accumulation_step += 1
+            for key, value in step_metrics.items():
+                metrics_accum[key] = metrics_accum.get(key, 0.0) + float(value)
+            metrics_count += 1.0
+
+            if accumulation_step % grad_accum_steps == 0:
+                grad_norm = clip_gradients(policy_model, config.max_grad_norm)
+                optimizer.step()
+                optimizer.zero_grad()
+                grad_norms.append(grad_norm)
+
+    if accumulation_step % grad_accum_steps != 0:
+        grad_norm = clip_gradients(policy_model, config.max_grad_norm)
+        optimizer.step()
+        optimizer.zero_grad()
+        grad_norms.append(grad_norm)
+
+    if metrics_count == 0:
+        return {}
+
+    averaged = {k: v / metrics_count for k, v in metrics_accum.items()}
+    if grad_norms:
+        averaged["grad_norm"] = sum(grad_norms) / len(grad_norms)
+    return averaged
 
 
 def clip_gradients(model: nn.Module, max_norm: float) -> float:
@@ -900,7 +1226,13 @@ def clip_gradients(model: nn.Module, max_norm: float) -> float:
         - Uses torch.nn.utils.clip_grad_norm_.
         - Clipping prevents gradient explosion.
     """
-    pass
+    if max_norm <= 0:
+        return 0.0
+
+    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+    if isinstance(grad_norm, torch.Tensor):
+        return float(grad_norm.detach().cpu())
+    return float(grad_norm)
 
 
 # ============================================================================
@@ -969,7 +1301,70 @@ def train_step(
         - old_model is typically updated every step (on-policy).
         - ref_model is updated less frequently to maintain stable KL reference.
     """
-    pass
+    minibatch = sample_questions(dataset, config.batch_size, tokenizer)
+    responses = rollout_batch(
+        old_model, minibatch, config, tokenizer, reward_fn
+    )
+
+    if len(responses) == 0:
+        return {"step": step, "num_episodes": 0}
+
+    normalized_rewards = normalize_rewards_per_group(
+        responses, config.group_size, config.reward_norm_eps
+    )
+
+    advantages_tensor = torch.tensor(
+        normalized_rewards, dtype=torch.float32
+    )
+    model_device = next(policy_model.parameters()).device
+    if config.advantage_whitening and advantages_tensor.numel() > 0:
+        advantages_tensor = whiten_advantages(
+            advantages_tensor.to(model_device),
+            eps=config.reward_norm_eps,
+        )
+    normalized_advantages = advantages_tensor.detach().cpu().tolist()
+
+    policy_batches = build_policy_batches(
+        responses,
+        normalized_advantages,
+        old_model,
+        tokenizer,
+        micro_batch_size=config.batch_size,
+    )
+
+    update_metrics = update_policy(
+        policy_model,
+        old_model,
+        ref_model,
+        optimizer,
+        policy_batches,
+        config,
+    )
+
+    rewards = [resp.reward for resp in responses]
+    reward_mean = sum(rewards) / len(rewards)
+    reward_std = (
+        torch.tensor(rewards).std(unbiased=False).item()
+        if len(rewards) > 1
+        else 0.0
+    )
+    metrics = {
+        **update_metrics,
+        "reward_mean": float(reward_mean),
+        "reward_std": float(reward_std),
+        "reward_max": float(max(rewards)),
+        "reward_min": float(min(rewards)),
+        "num_episodes": float(len(rewards)),
+        "step": float(step),
+    }
+
+    if config.old_update_freq > 0 and (step + 1) % config.old_update_freq == 0:
+        update_old_model(policy_model, old_model)
+
+    if config.ref_update_freq > 0 and (step + 1) % config.ref_update_freq == 0:
+        update_reference_model(policy_model, ref_model)
+
+    return metrics
 
 
 def train_loop(
@@ -1012,7 +1407,41 @@ def train_loop(
         - Optimizer is typically AdamW with low learning rate (~1e-5).
         - Checkpoints should include: model state, optimizer state, step number.
     """
-    pass
+    if num_steps <= 0:
+        return
+
+    optimizer = torch.optim.AdamW(
+        policy_model.parameters(), lr=config.learning_rate
+    )
+    old_model = initialize_old_model(policy_model)
+    ref_model = initialize_reference_model(policy_model)
+
+    checkpoint_path = Path(checkpoint_dir)
+    checkpoint_path.mkdir(parents=True, exist_ok=True)
+
+    for step in range(num_steps):
+        metrics = train_step(
+            policy_model,
+            old_model,
+            ref_model,
+            optimizer,
+            dataset,
+            tokenizer,
+            reward_fn,
+            config,
+            step,
+        )
+
+        if config.log_freq > 0 and (step + 1) % config.log_freq == 0:
+            log_metrics(metrics, step + 1)
+
+        if (
+            config.checkpoint_freq > 0
+            and (step + 1) % config.checkpoint_freq == 0
+        ):
+            save_checkpoint(policy_model, optimizer, step + 1, checkpoint_dir)
+
+    save_checkpoint(policy_model, optimizer, num_steps, checkpoint_dir)
 
 
 def initialize_old_model(policy_model: PreTrainedModel) -> PreTrainedModel:
@@ -1030,7 +1459,9 @@ def initialize_old_model(policy_model: PreTrainedModel) -> PreTrainedModel:
         - Not trainable (not passed to optimizer), but gradients not disabled.
         - Uses copy.deepcopy for HuggingFace models to ensure complete independence.
     """
-    pass
+    old_model = copy.deepcopy(policy_model)
+    old_model.eval()
+    return old_model
 
 
 def initialize_reference_model(policy_model: PreTrainedModel) -> PreTrainedModel:
@@ -1049,7 +1480,9 @@ def initialize_reference_model(policy_model: PreTrainedModel) -> PreTrainedModel
         - Updated less frequently than old_model.
         - Uses copy.deepcopy and then freezes all parameters.
     """
-    pass
+    ref_model = copy.deepcopy(policy_model)
+    freeze_model(ref_model)
+    return ref_model
 
 
 def update_old_model(policy_model: PreTrainedModel, old_model: PreTrainedModel) -> None:
@@ -1065,7 +1498,8 @@ def update_old_model(policy_model: PreTrainedModel, old_model: PreTrainedModel) 
         - Typically done every step (on-policy updates).
         - Works with HuggingFace PreTrainedModel instances.
     """
-    pass
+    old_model.load_state_dict(policy_model.state_dict())
+    old_model.eval()
 
 
 def update_reference_model(
@@ -1083,7 +1517,8 @@ def update_reference_model(
         - Maintains frozen status (requires_grad stays False).
         - Works with HuggingFace PreTrainedModel instances.
     """
-    pass
+    ref_model.load_state_dict(policy_model.state_dict())
+    freeze_model(ref_model)
 
 
 def save_checkpoint(
@@ -1103,7 +1538,18 @@ def save_checkpoint(
         - Also saves optimizer state_dict and step number.
         - Filename format: checkpoint_step_{step}/
     """
-    pass
+    path = Path(checkpoint_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    checkpoint_file = path / f"step_{step}.pt"
+
+    torch.save(
+        {
+            "model": policy_model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "step": step,
+        },
+        checkpoint_file,
+    )
 
 
 def load_checkpoint(
@@ -1125,7 +1571,18 @@ def load_checkpoint(
         - Loads model state_dict, optimizer state_dict, and step number.
         - Used for resuming training.
     """
-    pass
+    checkpoint_file = Path(checkpoint_path)
+    if checkpoint_file.is_dir():
+        raise ValueError("checkpoint_path should point to a checkpoint file")
+
+    device = next(policy_model.parameters()).device
+    checkpoint = torch.load(checkpoint_file, map_location=device)
+
+    policy_model.load_state_dict(checkpoint["model"])
+    if "optimizer" in checkpoint and optimizer is not None:
+        optimizer.load_state_dict(checkpoint["optimizer"])
+
+    return int(checkpoint.get("step", 0))
 
 
 # ============================================================================
@@ -1143,7 +1600,7 @@ def count_parameters(model: nn.Module) -> int:
     Returns:
         Total number of parameters.
     """
-    pass
+    return sum(p.numel() for p in model.parameters())
 
 
 def freeze_model(model: nn.Module) -> None:
@@ -1153,7 +1610,9 @@ def freeze_model(model: nn.Module) -> None:
     Args:
         model: Model to freeze.
     """
-    pass
+    for param in model.parameters():
+        param.requires_grad = False
+    model.eval()
 
 
 def log_metrics(metrics: Dict[str, Any], step: int) -> None:
@@ -1168,4 +1627,5 @@ def log_metrics(metrics: Dict[str, Any], step: int) -> None:
         - Can use wandb, tensorboard, or simple print statements.
         - Should log: loss, reward statistics, KL, entropy, grad norm, etc.
     """
-    pass
+    formatted = ", ".join(f"{k}={v}" for k, v in sorted(metrics.items()))
+    print(f"[step {step}] {formatted}")

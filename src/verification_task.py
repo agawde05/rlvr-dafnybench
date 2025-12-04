@@ -19,6 +19,13 @@ You MUST think inside <think>...</think> tags.
 Your final output MUST appear ONLY inside <answer>...</answer> tags.
 No commentary, no explanations, no meta text in the final answer.
 
+ABSOLUTE RULES FOR <answer>:
+- The content inside <answer> MUST be PURE Dafny code.
+- NO markdown. NO code fences. NO ``` blocks.
+- NO natural language. NO explanations. NO comments of any kind.
+- NO text before <answer> and NO text after </answer>.
+- The content MUST be syntactically valid Dafny.
+
 <think> is hidden from the user in deployment but will be visible during training.
 Inside <think> you must:
 - reason step-by-step to infer required invariants or assertions,

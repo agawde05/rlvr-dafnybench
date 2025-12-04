@@ -3,7 +3,25 @@ from pathlib import Path
 import datasets
 import polars as pl
 
+try:
+    from scripts.dafny_utils import strip_method_and_lemma_bodies
+except ImportError:  # Running as a script from the scripts/ directory.
+    from dafny_utils import strip_method_and_lemma_bodies
+
 DEFAULT_SAVE_PATH = Path(__file__).resolve().parents[1] / "data" / "DafnyBench" / "dafnybench.parquet"
+
+
+def _ensure_unimplemented_column(df: pl.DataFrame) -> pl.DataFrame:
+    """Add the column with stripped implementations if missing."""
+    if "unimplemented_body" in df.columns:
+        return df
+
+    source_body = pl.coalesce([pl.col("annotated_body"), pl.col("body")])
+    return df.with_columns(
+        source_body.map_elements(
+            strip_method_and_lemma_bodies, return_dtype=pl.Utf8
+        ).alias("unimplemented_body")
+    )
 
 
 def load_dafnybench_data(split: str = "test") -> pl.DataFrame:
@@ -11,23 +29,34 @@ def load_dafnybench_data(split: str = "test") -> pl.DataFrame:
     ds = datasets.load_dataset("wendy-sun/DafnyBench")
     table = ds[split].with_format("polars")[:]  
     df = pl.DataFrame(table)
-    # normalize columns to a consistent schema we use elsewhere.
+
     rename_map = {
+        "test_ID": "id",
+        "test_file": "header",
         "hints_removed": "body",
         "ground_truth": "annotated_body",
-        "file_name": "id",
-        "filename": "id",
     }
-    # rename columns if needed
     for old, new in rename_map.items():
         if old in df.columns and new not in df.columns:
             df = df.rename({old: new})
+
     if "id" not in df.columns:
         df = df.with_row_index("id")
-    if "spec" not in df.columns:
-        df = df.with_columns(pl.lit(None).alias("spec"))
+
     if "header" not in df.columns:
-        df = df.with_columns(pl.lit(None).alias("header"))
+        df = df.with_columns(pl.lit(None, dtype=pl.Utf8).alias("header"))
+
+    if "body" not in df.columns:
+        df = df.with_columns(pl.lit(None, dtype=pl.Utf8).alias("body"))
+
+    if "annotated_body" not in df.columns:
+        df = df.with_columns(pl.lit(None, dtype=pl.Utf8).alias("annotated_body"))
+
+    if "spec" not in df.columns:
+        df = df.with_columns(pl.lit(None, dtype=pl.Utf8).alias("spec"))
+
+    df = _ensure_unimplemented_column(df)
+
     return df
 
 
@@ -39,7 +68,8 @@ def save_dafnybench_data(data: pl.DataFrame, save_path: Path = DEFAULT_SAVE_PATH
 
 def load_saved_dafnybench_data(load_path: Path = DEFAULT_SAVE_PATH) -> pl.DataFrame:
     """Loads the DafnyBench dataset from a Parquet file."""
-    return pl.read_parquet(load_path)
+    df = pl.read_parquet(load_path)
+    return _ensure_unimplemented_column(df)
 
 
 if __name__ == "__main__":

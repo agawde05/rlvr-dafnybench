@@ -77,6 +77,10 @@ lint:
 test:
 	uv run pytest -q
 
+## Remove generated playground example_* folders
+clean-playground:
+	uv run playground/dafny_examples/clean_examples.py
+
 # -------- Utility --------
 
 ## Display help
