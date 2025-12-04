@@ -17,6 +17,8 @@ import re
 from dafny_file import Dafny
 from data_types import GrpoConfig, Response
 from grpo_zero import PolicyBatch
+from rlvr_dafnybench.utils import tensor_info
+
 from verification_task import (
     ASSUMTION_WEIGHT,
     DELETION_WEIGHT,
@@ -348,7 +350,7 @@ class CustomRLTrainer:
                 completion_text = self.tokenizer.decode(
                     completion_ids, skip_special_tokens=True
                 )
-                print(f"Completed text")
+                print(f"Completion text: {completion_text}")
                 full_text = self.tokenizer.decode(
                     generated_ids, skip_special_tokens=True
                 )
@@ -588,9 +590,11 @@ class CustomRLTrainer:
                 input_ids=input_ids,
                 attention_mask=attention_mask,
             )
+            tensor_info("outputs", outputs)
             logits: Tensor = outputs.logits
+            tensor_info("logits", logits)
             log_probs = torch.log_softmax(logits, dim=-1)
-
+            tensor_info("log_probs", log_probs)
         shifted_input = input_ids[:, 1:]
         shifted_log_probs = log_probs[:, :-1, :]
         gathered = torch.gather(
