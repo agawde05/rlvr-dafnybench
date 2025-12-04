@@ -291,7 +291,6 @@ class CustomRLTrainer:
 
         for prompt_idx, prompt in enumerate(minibatch.prompts):
             print(f"Collecting rollouts for prompt {prompt_idx} of {len(minibatch.prompts)}")
-            print(f"Prompt: {prompt}")
             prompt_ids = minibatch.prompt_token_ids[prompt_idx]
             prompt_tensor = torch.tensor(
                 prompt_ids, dtype=torch.long, device=self.device
@@ -322,7 +321,7 @@ class CustomRLTrainer:
                 completion_text = self.tokenizer.decode(
                     completion_ids, skip_special_tokens=True
                 )
-                print(f"Completion text: {completion_text}")
+                print(f"Completed text")
                 full_text = self.tokenizer.decode(
                     generated_ids, skip_special_tokens=True
                 )
