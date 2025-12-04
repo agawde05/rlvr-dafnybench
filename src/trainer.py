@@ -550,7 +550,7 @@ class CustomRLTrainer:
 
                 loss = loss / grad_accum_steps
                 loss.backward()
-                del loss, objective, logits, token_log_probs, objective, advantages_expanded
+                del loss, objective, logits, token_log_probs, advantages_expanded
                 torch.cuda.empty_cache()
 
                 accumulation_step += 1
