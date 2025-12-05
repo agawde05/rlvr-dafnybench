@@ -1,4 +1,6 @@
 # src/rlvr_dafnybench/utils.py
+import gc
+import torch
 
 
 def load_config(_path: str = None):  # type: ignore
@@ -12,3 +14,11 @@ def tensor_info(name, t):
     numel = t.numel()
     mem = numel * t.element_size() / 1024**2
     print(f"{name}: shape={tuple(t.shape)}, dtype={t.dtype}, size={mem:.2f} MB")
+
+def print_live_tensors():
+    for obj in gc.get_objects():
+        try:
+            if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+                print(type(obj), obj.size(), obj.device, obj.dtype)
+        except:
+            pass

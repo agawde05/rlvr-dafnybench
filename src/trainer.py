@@ -17,6 +17,7 @@ import re
 
 from dafny_file import Dafny
 from data_types import GrpoConfig, Response
+from src.rlvr_dafnybench.utils import print_live_tensors
 from verification_task import (
     ASSUMTION_WEIGHT,
     DELETION_WEIGHT,
@@ -491,6 +492,7 @@ class CustomRLTrainer:
 
                 print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
                 print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+                print_live_tensors()
 
                 outputs = self.policy_model(
                     input_ids=input_token_ids,
@@ -501,6 +503,7 @@ class CustomRLTrainer:
                 
                 print(f"Allocated mid: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
                 print(f"Reserved mid:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+                print_live_tensors()
 
                 per_token_loss = F.cross_entropy(
                     logits.reshape(-1, logits.size(-1)),
@@ -511,6 +514,7 @@ class CustomRLTrainer:
 
                 print(f"Allocated after: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
                 print(f"Reserved after:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+                print_live_tensors()
 
             token_log_probs = -per_token_loss * target_token_mask
             advantages_expanded = advantages.view(-1, 1)

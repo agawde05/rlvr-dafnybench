@@ -27,6 +27,7 @@ def build_verification_reward(dafny_binary: Path) -> RewardFn:
         prompt: str, completion: str, metadata: Dict[str, Any]
     ) -> Tuple[float, Dict[str, Any]]:
         original_code = metadata.get("original_code", prompt)
+        print("original_code: ", original_code)
         try:
             dafny_file: DafnyFile = get_generated_dafny_code(completion, original_code)
         except ValueError:
