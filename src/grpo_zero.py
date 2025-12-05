@@ -185,7 +185,7 @@ def rollout_batch(
 
             rollout_metadata: Dict[str, Any] = {
                 "original_code": prompt,
-                "diff_json": completion_text,
+                "generated_code": completion_text,
             }
             reward, components = reward_fn(prompt, completion_text, rollout_metadata)
             components = components or {}

@@ -27,8 +27,10 @@ from verification_task import (
     deletion_reward_function,
     format_reward_function,
     get_generated_dafny_code,
-    SYSTEM_MESSAGE,
-    USER_TEMPLATE,
+    RL_SYSTEM_MESSAGE,
+    RL_USER_TEMPLATE,
+    SFT_SYSTEM_MESSAGE,
+    SFT_USER_TEMPLATE,
     verification_reward_function,
 )
 
@@ -432,7 +434,7 @@ class CustomRLTrainer:
                 print(f"Full text: {full_text}")
 
                 rollout_metadata = dict(metadata[prompt_idx])
-                rollout_metadata["diff_json"] = completion_text
+                rollout_metadata["generated_code"] = completion_text
 
                 response = Response(
                     prompt=prompt,
@@ -563,7 +565,7 @@ class CustomRLTrainer:
         max_length = 0
 
         for body, annotated in pairs:
-            prompt_text = body.rstrip()
+            prompt_text = self._format_sft_prompt(body)
             target_text = annotated.strip()
             if not target_text:
                 continue
@@ -770,13 +772,21 @@ class CustomRLTrainer:
         return {key: value / count for key, value in accumulator.items()}
 
     def _format_prompt(self, prompt: str) -> str:
-        system_text = SYSTEM_MESSAGE.strip()
-        user_text = USER_TEMPLATE.format(dafny_code_snippet=prompt).strip()
+        user_text = RL_USER_TEMPLATE.format(dafny_code_snippet=prompt)
+        return self._build_chat_prompt(RL_SYSTEM_MESSAGE, user_text)
+
+    def _format_sft_prompt(self, body: str) -> str:
+        user_text = SFT_USER_TEMPLATE.format(dafny_body=body)
+        return self._build_chat_prompt(SFT_SYSTEM_MESSAGE, user_text)
+
+    def _build_chat_prompt(self, system_text: str, user_text: str) -> str:
+        system_clean = system_text.strip()
+        user_clean = user_text.strip()
 
         if hasattr(self.tokenizer, "apply_chat_template"):
             messages = [
-                {"role": "system", "content": system_text},
-                {"role": "user", "content": user_text},
+                {"role": "system", "content": system_clean},
+                {"role": "user", "content": user_clean},
             ]
             try:
                 return self.tokenizer.apply_chat_template(
@@ -785,10 +795,10 @@ class CustomRLTrainer:
                     add_generation_prompt=True,
                 )
             except TypeError:
-                # Some tokenizers may have a different signature; fall back to manual formatting.
+                # Some tokenizers may expose a different signature; fall back to manual formatting.
                 pass
 
-        return f"{system_text}\n\n{user_text}"
+        return f"{system_clean}\n\n{user_clean}"
 
     def _extract_prompt(self, item: Any) -> str:
         if isinstance(item, Mapping):
@@ -824,7 +834,7 @@ class CustomRLTrainer:
                 assume_score = assume_reward_function(original_code, modified_code)
                 deletion_score = deletion_reward_function(original_code, modified_code)
             except ValueError:
-                # Missing <answer> tags; keep defaults (all zeros)
+                # Generated text was not valid Dafny code; keep defaults (all zeros)
                 pass
 
             total_reward = (
