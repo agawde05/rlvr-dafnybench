@@ -472,8 +472,8 @@ class CustomRLTrainer:
         num_epochs = max(1, getattr(self.config, "num_epochs", 1))
 
         for micro in policy_batches:
-            print("Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-            print("Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+            print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+            print(f"Reserved:  {torch.cuda.memory_reserved()  / 1024**2:.2f} MB")
             if micro.num_target_tokens == 0:
                 continue
 
