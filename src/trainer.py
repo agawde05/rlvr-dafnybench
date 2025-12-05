@@ -489,12 +489,18 @@ class CustomRLTrainer:
 
             with self._autocast_context():
 
+                print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+                print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+
                 outputs = self.policy_model(
                     input_ids=input_token_ids,
                     attention_mask=attention_for_model,
                 )
 
                 logits = outputs.logits
+                
+                print(f"Allocated mid: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+                print(f"Reserved mid:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
 
                 per_token_loss = F.cross_entropy(
                     logits.reshape(-1, logits.size(-1)),
@@ -502,6 +508,9 @@ class CustomRLTrainer:
                     ignore_index=pad_token_id,
                     reduction="none",
                 ).reshape(target_token_mask.shape)
+
+                print(f"Allocated after: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+                print(f"Reserved after:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
 
             token_log_probs = -per_token_loss * target_token_mask
             advantages_expanded = advantages.view(-1, 1)
