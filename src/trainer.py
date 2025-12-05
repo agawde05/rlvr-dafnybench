@@ -216,19 +216,109 @@ class CustomRLTrainer:
             if self._step % self.config.log_freq == 0:
                 self.logger(metrics)
 
-            if (
-                checkpoint_path
-                and self.config.checkpoint_freq > 0
-                and self._step % self.config.checkpoint_freq == 0
-            ):
-                self._save_checkpoint(checkpoint_path, self._step)
+            # if (
+            #     checkpoint_path
+            #     and self.config.checkpoint_freq > 0
+            #     and self._step % self.config.checkpoint_freq == 0
+            # ):
+            #     self._save_checkpoint(checkpoint_path, self._step)
 
-            if self.config.ref_update_freq > 0 and (
-                self._step % self.config.ref_update_freq == 0
-            ):
-                self._sync_model(self.policy_model, self.ref_model, freeze=True)
+            # if self.config.ref_update_freq > 0 and (
+            #     self._step % self.config.ref_update_freq == 0
+            # ):
+            #     self._sync_model(self.policy_model, self.ref_model, freeze=True)
 
             self._step += 1
+
+    def supervised_fine_tune(
+        self,
+        examples: Sequence[Mapping[str, Any]],
+        epochs: int = 1,
+        batch_size: Optional[int] = None,
+        shuffle: bool = True,
+    ) -> Mapping[str, float]:
+        """
+        Run supervised fine-tuning on raw Dafny bodies paired with annotated bodies.
+
+        Each example must provide `body` and `annotated_body` fields. The model is
+        trained with cross-entropy loss to generate the annotated body given the raw
+        body as context.
+        """
+        if not examples:
+            return {}
+
+        valid_pairs: List[Tuple[str, str]] = []
+        for item in examples:
+            if not isinstance(item, Mapping):
+                continue
+            body = str(item.get("body", "") or "").strip()
+            annotated = str(item.get("annotated_body", "") or "").strip()
+            if body and annotated:
+                valid_pairs.append((body, annotated))
+
+        if not valid_pairs:
+            raise ValueError(
+                "No valid supervised examples found; expected non-empty `body` and "
+                "`annotated_body` fields."
+            )
+
+        effective_batch_size = max(1, batch_size or self.config.batch_size)
+        grad_accum_steps = max(1, self.config.gradient_accumulation_steps)
+        ignore_index = -100
+
+        self.policy_model.train()
+        self.optimizer.zero_grad(set_to_none=True)
+
+        cumulative_loss = 0.0
+        cumulative_tokens = 0
+        steps = 0
+
+        for epoch in range(max(1, epochs)):
+            if shuffle:
+                self._rng.shuffle(valid_pairs)
+
+            for start in range(0, len(valid_pairs), effective_batch_size):
+                batch_pairs = valid_pairs[start : start + effective_batch_size]
+                batch_tensors = self._build_supervised_batch(batch_pairs, ignore_index)
+                if batch_tensors is None:
+                    continue
+
+                input_ids, attention_mask, labels = batch_tensors
+
+                print("length of input_ids: ", input_ids.size(1))
+
+                with self._autocast_context():
+                    outputs = self.policy_model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        labels=labels,
+                        use_cache=False,
+                    )
+                    raw_loss = outputs.loss
+                    loss = raw_loss / grad_accum_steps
+
+                loss.backward()
+                steps += 1
+
+                cumulative_loss += float(raw_loss.detach())
+                cumulative_tokens += int((labels != ignore_index).sum().item())
+
+                if steps % grad_accum_steps == 0:
+                    self.optimizer.step()
+                    self.optimizer.zero_grad(set_to_none=True)
+
+        # Flush remaining gradients if we exited early in an accumulation cycle.
+        if steps % grad_accum_steps != 0:
+            self.optimizer.step()
+            self.optimizer.zero_grad(set_to_none=True)
+
+        update_steps = max(1, (steps + grad_accum_steps - 1) // grad_accum_steps)
+        mean_loss = cumulative_loss / update_steps
+        return {
+            "sft_loss": mean_loss,
+            "sft_tokens": float(cumulative_tokens),
+            "sft_steps": float(update_steps),
+        }
 
     # --------------------------------------------------------------------- #
     # Sampling & Rollout Helpers
@@ -334,9 +424,12 @@ class CustomRLTrainer:
                 completion_text = self.tokenizer.decode(
                     completion_ids, skip_special_tokens=True
                 )
+                # print(f"Completion text: {completion_text}")
                 full_text = self.tokenizer.decode(
                     generated_ids, skip_special_tokens=True
                 )
+
+                print(f"Full text: {full_text}")
 
                 rollout_metadata = dict(metadata[prompt_idx])
                 rollout_metadata["diff_json"] = completion_text
@@ -454,6 +547,84 @@ class CustomRLTrainer:
 
         return batches
 
+    def _build_supervised_batch(
+        self,
+        pairs: Sequence[Tuple[str, str]],
+        ignore_index: int,
+    ) -> Optional[Tuple[Tensor, Tensor, Tensor]]:
+        if not pairs:
+            return None
+
+        pad_token_id = self.pad_token_id
+        eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
+
+        encoded_inputs: List[Tensor] = []
+        encoded_labels: List[Tensor] = []
+        max_length = 0
+
+        for body, annotated in pairs:
+            prompt_text = body.rstrip()
+            target_text = annotated.strip()
+            if not target_text:
+                continue
+
+            prompt_ids = self.tokenizer(
+                prompt_text,
+                add_special_tokens=True,
+                return_tensors="pt",
+            )["input_ids"][0]
+
+            target_ids = self.tokenizer(
+                target_text,
+                add_special_tokens=False,
+                return_tensors="pt",
+            )["input_ids"][0]
+
+            if eos_token_id is not None and (len(target_ids) == 0 or target_ids[-1] != eos_token_id):
+                target_ids = torch.cat(
+                    [target_ids, torch.tensor([eos_token_id], dtype=torch.long)]
+                )
+
+            input_ids = torch.cat([prompt_ids, target_ids], dim=0)
+            labels = torch.full_like(input_ids, ignore_index)
+            labels[len(prompt_ids) :] = input_ids[len(prompt_ids) :]
+
+            encoded_inputs.append(input_ids)
+            encoded_labels.append(labels)
+            max_length = max(max_length, input_ids.size(0))
+
+        if not encoded_inputs:
+            return None
+
+        batch_size = len(encoded_inputs)
+        device = self.device
+
+        input_batch = torch.full(
+            (batch_size, max_length),
+            pad_token_id,
+            dtype=torch.long,
+            device=device,
+        )
+        attention_batch = torch.zeros(
+            (batch_size, max_length),
+            dtype=torch.long,
+            device=device,
+        )
+        label_batch = torch.full(
+            (batch_size, max_length),
+            ignore_index,
+            dtype=torch.long,
+            device=device,
+        )
+
+        for row, (seq, lab) in enumerate(zip(encoded_inputs, encoded_labels)):
+            length = seq.size(0)
+            input_batch[row, :length] = seq.to(device)
+            attention_batch[row, :length] = 1
+            label_batch[row, :length] = lab.to(device)
+
+        return input_batch, attention_batch, label_batch
+
     # --------------------------------------------------------------------- #
     # Policy Update
     # --------------------------------------------------------------------- #
@@ -469,12 +640,10 @@ class CustomRLTrainer:
         if total_target_tokens == 0:
             return {}
 
-        metrics_accumulator: Dict[str, float] = {}
         grad_accum_steps = max(1, self.config.gradient_accumulation_steps)
         accumulation_step = 0
         self.optimizer.zero_grad()
         pad_token_id = self.pad_token_id
-        num_epochs = max(1, getattr(self.config, "num_epochs", 1))
 
         total_loss = 0.0
 
@@ -494,8 +663,8 @@ class CustomRLTrainer:
 
             with self._autocast_context():
 
-                print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-                print(f"Reserved:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+                print(f"Allocated before: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+                print(f"Reserved before:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
 
                 outputs = self.policy_model(
                     input_ids=input_token_ids,
@@ -503,10 +672,7 @@ class CustomRLTrainer:
                     use_cache=False
                 )
 
-                logits = outputs.logits.float().detach()
-                
-                print(f"Allocated mid: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-                print(f"Reserved mid:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
+                logits = outputs.logits
 
                 per_token_loss = F.cross_entropy(
                     logits.reshape(-1, logits.size(-1)),
@@ -515,24 +681,27 @@ class CustomRLTrainer:
                     reduction="none",
                 ).reshape(target_token_mask.shape)
 
-                print(f"Allocated after: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-                print(f"Reserved after:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
-
+                del logits
+                del outputs
+                
             token_log_probs = -per_token_loss * target_token_mask
             advantages_expanded = advantages.view(-1, 1)
             objective = (token_log_probs * advantages_expanded).sum() / total_target_tokens
+            
             loss = -objective
 
             loss = loss / grad_accum_steps
 
-            total_loss += loss.item()
+            total_loss += loss.detach().item()
             loss.backward(retain_graph=False)
+            del per_token_loss
+            del loss
+            del objective
+            del token_log_probs
+            del advantages_expanded
+            del advantages
 
-            grad_norm = self._clip_gradients(self.policy_model)
-
-            self.optimizer.step()
-
-            self.optimizer.zero_grad(set_to_none=True)
+        grad_norm = self._clip_gradients(self.policy_model)
 
         return {
             "loss": float(total_loss),

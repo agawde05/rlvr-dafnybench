@@ -4,74 +4,28 @@ from typing import Mapping, Any
 from dafny_file import DafnyFile, Dafny
 from diff_merger import DiffMergeError, merge_diff, validate_diff_json
 
-SYSTEM_MESSAGE = """You are an LLM specialized in formal verification. 
-Your task is to take existing Dafny code and produce the minimal, fully annotated
-changes required for the Dafny verifier to prove total correctness.
+SYSTEM_MESSAGE = """You are a formal verification specialist. Given Dafny source, produce the minimal annotations required for Dafny to prove total correctness.
 
-You MUST:
-- Add assert statements, loop invariants, decreases clauses, pre/postconditions,
-  frame specifications, and any auxiliary lemmas necessary for verification.
-- Preserve the structure of the original program unless correctness requires a
-  modification. Justify removals by replacing them with equivalent commented code.
-- Return your modifications as a structured diff rather than the full file.
+Requirements:
+- Add or strengthen asserts, loop invariants, decreases clauses, pre/postconditions, frame specifications, and auxiliary lemmas whenever needed.
+- Preserve original structure unless correctness forces a change; if code is removed, leave an equivalent commented placeholder.
+- Emit only a structured diff of your edits, never the full file.
 
-STRICT FORMAT:
-You MUST think inside <think>...</think> tags.
-Your final output MUST appear ONLY inside <answer>...</answer> tags.
-No commentary, no explanations, no meta text outside the required tags.
+Protocol:
+- Reason exclusively inside <think>...</think>.
+- Emit the final diff exclusively inside <answer>...</answer>.
+- <answer> must be valid JSON of the form {"hunks": [...]}, using 1-indexed original_start/original_length/patched_start/patched_length and a lines array of objects with keys type ("context"|"remove"|"add") and text without trailing newlines.
+- Output {"hunks": []} if no changes are needed.
+- Do not add other keys, markdown, or prose outside the required tags.
 
-ABSOLUTE RULES FOR <answer>:
-- The content inside <answer> MUST be valid JSON describing Git-style hunks:
-  {
-    "hunks": [
-      {
-        "original_start": 12,
-        "original_length": 3,
-        "patched_start": 12,
-        "patched_length": 4,
-        "lines": [
-          {"type": "context", "text": "unchanged line"},
-          {"type": "remove", "text": "old line"},
-          {"type": "add", "text": "new line"}
-        ]
-      }
-    ]
-  }
-- Line numbers are 1-indexed. `text` entries MUST omit trailing newline characters.
-- Only the keys shown above are permitted; do not include summaries or comments.
-- If no changes are required, output {"hunks": []}.
-- NO markdown. NO ``` fences. NO natural language. NO comments.
-
-<think> is hidden from the user in deployment but will be visible during training.
-Inside <think> you must:
-- reason step-by-step to infer required invariants or assertions,
-- identify verification barriers,
-- plan modifications that guarantee termination and correctness.
-
-Inside <answer> you must:
-- output the JSON diff adhering strictly to the schema above.
-
-All invariants must be strong enough for Dafny to verify.
-All modifications must preserve semantic meaning.
-
-Your output MUST be deterministic and complete.
+Your output must be deterministic and complete. Do not use code blocks or markdown.
 """
 
-USER_TEMPLATE = """Below is Dafny code that needs verification annotations.
+USER_TEMPLATE = """Verify the Dafny code below and add every annotation needed for total correctness.
 
-Insert all necessary:
-- requires/ensures
-- assert statements
-- loop invariants
-- decreases clauses
-- modifies/frame specifications
-- auxiliary lemmas (only if needed)
-- datatype or function constraints
+Include any missing requires/ensures, asserts, loop invariants, decreases clauses, modifies/frame specifications, and auxiliary lemmas only when required. Do not introduce new assume statements or delete code without a commented equivalent.
 
-Return ONLY the JSON diff describing the changes, following the system schema.
-
-Follow the system instructions exactly.
-Use <think> for chain-of-thought and <answer> for the final JSON diff.
+Return only the diff JSON that matches the system schema, with reasoning in <think> and the diff in <answer>.
 
 ----- BEGIN INPUT CODE -----
 {dafny_code_snippet}

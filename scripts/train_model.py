@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -17,29 +17,36 @@ from scripts.get_data import (
 from src.trainer import CustomRLTrainer
 
 
-def _prepare_prompts(split: str = "test") -> List[str]:
+def _load_or_prepare_dataframe(split: str = "test"):
     """
-    Ensure the DafnyBench split is available locally and return a list of
-    prompts suitable for sampling by the trainer.
+    Ensure the DafnyBench split is available locally and return the dataframe.
     """
     if DEFAULT_SAVE_PATH.exists():
-        df = load_saved_dafnybench_data(DEFAULT_SAVE_PATH)
-    else:
-        df = load_dafnybench_data(split=split)
-        save_dafnybench_data(df, DEFAULT_SAVE_PATH)
+        return load_saved_dafnybench_data(DEFAULT_SAVE_PATH)
 
+    df = load_dafnybench_data(split=split)
+    save_dafnybench_data(df, DEFAULT_SAVE_PATH)
+    return df
+
+
+def _prepare_prompts(df) -> List[str]:
+    """
+    Convert the DafnyBench dataframe into prompt strings suitable for RL.
+    """
     if "body" not in df.columns:
         raise ValueError("Expected 'body' column to be present in DafnyBench data.")
 
     headers = df.get_column("header") if "header" in df.columns else None
     bodies = df.get_column("body")
+    annotated_bodies = df.get_column("annotated_body")
 
     prompts: List[str] = []
     for idx in range(len(df)):
         header = headers[idx] if headers is not None else None
         body = bodies[idx]
+        annotated_body = annotated_bodies[idx]
 
-        parts = [part for part in (header, body) if isinstance(part, str) and part.strip()]
+        parts = [part for part in (header, body, annotated_body) if isinstance(part, str) and part.strip()]
         if not parts:
             continue
         prompts.append("\n".join(parts))
@@ -48,6 +55,32 @@ def _prepare_prompts(split: str = "test") -> List[str]:
         raise ValueError("No usable prompts were extracted from DafnyBench.")
 
     return prompts
+
+
+def _prepare_supervised_pairs(df) -> List[Dict[str, str]]:
+    """
+    Produce (body, annotated_body) pairs for supervised fine-tuning.
+    """
+    if "body" not in df.columns or "annotated_body" not in df.columns:
+        raise ValueError("DafnyBench data is missing required columns for supervised fine-tuning.")
+
+    bodies = df.get_column("body")
+    annotated_bodies = df.get_column("annotated_body")
+
+    pairs: List[Dict[str, str]] = []
+    for idx in range(len(df)):
+        body = bodies[idx]
+        annotated = annotated_bodies[idx]
+        if isinstance(body, str) and isinstance(annotated, str):
+            body_text = body.strip()
+            annotated_text = annotated.strip()
+            if body_text and annotated_text:
+                pairs.append({"body": body_text, "annotated_body": annotated_text})
+
+    if not pairs:
+        raise ValueError("No valid supervised fine-tuning pairs were found in DafnyBench.")
+
+    return pairs
 
 
 def main() -> None:
@@ -61,7 +94,9 @@ def main() -> None:
 
     print("Model loaded successfully")
 
-    dataset = _prepare_prompts(split="test")
+    df = _load_or_prepare_dataframe(split="test")
+    dataset = _prepare_prompts(df)
+    supervised_pairs = _prepare_supervised_pairs(df)
 
     config = GrpoConfig(
         batch_size=8,
@@ -80,6 +115,14 @@ def main() -> None:
         config=config,
         device=device,
     )
+
+    print("Starting supervised fine-tuning warmup...")
+    sft_metrics = trainer.supervised_fine_tune(
+        supervised_pairs,
+        epochs=1,
+        batch_size=config.batch_size,
+    )
+    print(f"Supervised fine-tuning metrics: {sft_metrics}")
 
     print("Starting training...")
 

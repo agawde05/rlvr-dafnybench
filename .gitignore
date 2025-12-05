@@ -96,3 +96,5 @@ Icon?
 
 # Dafny artifacts
 *.dfy
+
+checkpoints/
