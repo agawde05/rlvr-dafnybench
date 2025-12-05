@@ -471,9 +471,9 @@ class CustomRLTrainer:
         pad_token_id = self.pad_token_id
         num_epochs = max(1, getattr(self.config, "num_epochs", 1))
 
+        total_loss = 0.0
+
         for micro in policy_batches:
-            print(f"Allocated: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-            print(f"Reserved:  {torch.cuda.memory_reserved()  / 1024**2:.2f} MB")
             if micro.num_target_tokens == 0:
                 continue
 
@@ -496,23 +496,21 @@ class CustomRLTrainer:
 
                 logits = outputs.logits
 
-            per_token_loss = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                target_token_ids.reshape(-1),
-                ignore_index=pad_token_id,
-                reduction="none",
-            ).reshape(target_token_mask.shape)
+                per_token_loss = F.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    target_token_ids.reshape(-1),
+                    ignore_index=pad_token_id,
+                    reduction="none",
+                ).reshape(target_token_mask.shape)
 
             token_log_probs = -per_token_loss * target_token_mask
             advantages_expanded = advantages.view(-1, 1)
             objective = (token_log_probs * advantages_expanded).sum() / total_target_tokens
             loss = -objective
 
-            step_metrics = {
-                "loss": float(loss.detach().cpu()),
-            }
-
             loss = loss / grad_accum_steps
+
+            total_loss += loss.item()
             loss.backward()
 
         grad_norm = self._clip_gradients(self.policy_model)
@@ -522,7 +520,7 @@ class CustomRLTrainer:
         self.optimizer.zero_grad(set_to_none=True)
 
         return {
-            "loss": float(loss.item()),
+            "loss": float(total_loss),
             "grad_norm": float(grad_norm),
         }
 
