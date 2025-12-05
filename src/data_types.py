@@ -151,7 +151,7 @@ class GrpoConfig:
 
     # Logging
     log_freq: int = field(
-        default=10,
+        default=1,
         metadata={"help": "Steps between metric logging."},
     )
 
