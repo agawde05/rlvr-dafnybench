@@ -207,7 +207,10 @@ class CustomRLTrainer:
             torch.cuda.empty_cache()
             
             update_metrics = self._update_policy(policy_batches)
+            del policy_batches
             reward_metrics = self._summarize_rewards(rollouts)
+            del rollouts
+            torch.cuda.empty_cache()
             metrics = {**reward_metrics, **update_metrics, "step": self._step}
 
             if self._step % self.config.log_freq == 0:
@@ -304,7 +307,6 @@ class CustomRLTrainer:
             try:
                 with torch.no_grad():
                     with self._autocast_context():
-                        self.policy_model.config.use_cache = True
                         generated = self.policy_model.generate(
                             input_ids=batch_input,
                             attention_mask=prompt_attention_mask,
@@ -317,7 +319,6 @@ class CustomRLTrainer:
                             return_dict_in_generate=True,
                             output_scores=False,
                         )
-                        self.policy_model.config.use_cache = False
 
             finally:
                 if model_was_training:
@@ -499,10 +500,10 @@ class CustomRLTrainer:
                 outputs = self.policy_model(
                     input_ids=input_token_ids,
                     attention_mask=attention_for_model,
-                    use_cache=False,
+                    use_cache=False
                 )
 
-                logits = outputs.logits
+                logits = outputs.logits.float().detach()
                 
                 print(f"Allocated mid: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
                 print(f"Reserved mid:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
@@ -525,7 +526,7 @@ class CustomRLTrainer:
             loss = loss / grad_accum_steps
 
             total_loss += loss.item()
-            loss.backward()
+            loss.backward(retain_graph=False)
 
             grad_norm = self._clip_gradients(self.policy_model)
 
