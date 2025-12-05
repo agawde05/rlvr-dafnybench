@@ -304,6 +304,7 @@ class CustomRLTrainer:
             try:
                 with torch.no_grad():
                     with self._autocast_context():
+                        self.policy_model.config.use_cache = True
                         generated = self.policy_model.generate(
                             input_ids=batch_input,
                             attention_mask=prompt_attention_mask,
@@ -316,6 +317,8 @@ class CustomRLTrainer:
                             return_dict_in_generate=True,
                             output_scores=False,
                         )
+                        self.policy_model.config.use_cache = False
+
             finally:
                 if model_was_training:
                     self.policy_model.train()
@@ -496,6 +499,7 @@ class CustomRLTrainer:
                 outputs = self.policy_model(
                     input_ids=input_token_ids,
                     attention_mask=attention_for_model,
+                    use_cache=False,
                 )
 
                 logits = outputs.logits
