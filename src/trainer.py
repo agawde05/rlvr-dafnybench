@@ -513,9 +513,6 @@ class CustomRLTrainer:
                 print(f"Allocated after: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
                 print(f"Reserved after:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
 
-                snapshot = torch.cuda.memory._snapshot()
-                torch.cuda.memory._dump_snapshot(snapshot, "snapshot.json")
-
             token_log_probs = -per_token_loss * target_token_mask
             advantages_expanded = advantages.view(-1, 1)
             objective = (token_log_probs * advantages_expanded).sum() / total_target_tokens
@@ -526,11 +523,11 @@ class CustomRLTrainer:
             total_loss += loss.item()
             loss.backward()
 
-        grad_norm = self._clip_gradients(self.policy_model)
+            grad_norm = self._clip_gradients(self.policy_model)
 
-        self.optimizer.step()
+            self.optimizer.step()
 
-        self.optimizer.zero_grad(set_to_none=True)
+            self.optimizer.zero_grad(set_to_none=True)
 
         return {
             "loss": float(total_loss),
