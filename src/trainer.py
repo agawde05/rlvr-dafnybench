@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import copy
+import gc
 import random
 import statistics
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Generator, List, Mapping, Optional, Sequence, Tuple
 
 import torch
 from torch import Tensor, nn
@@ -14,10 +16,9 @@ from torch.optim import AdamW, Optimizer
 import torch.nn.functional as F
 import re
 
-
 from dafny_file import Dafny
+from memory_efficient_optimizer import MemoryEfficientAdamW
 from data_types import GrpoConfig, Response
-from src.rlvr_dafnybench.utils import print_live_tensors
 from verification_task import (
     ASSUMTION_WEIGHT,
     DELETION_WEIGHT,
@@ -123,6 +124,7 @@ class CustomRLTrainer:
         config: Optional[GrpoConfig] = None,
         optimizer: Optional[Optimizer] = None,
         ref_model: Optional[nn.Module] = None,
+        old_model: Optional[nn.Module] = None,
         scheduler: Optional[Any] = None,
         dafny: Optional[Dafny] = None,
         dafny_path: Optional[str] = None,
@@ -140,14 +142,47 @@ class CustomRLTrainer:
             self.config.mixed_precision and autocast and torch.cuda.is_available()
         )
 
-        self.ref_model = (ref_model or self._clone_model(self.policy_model)).to(
-            self.device
-        )
-        self._freeze_model(self.ref_model)
+        # Enable gradient checkpointing to reduce activation memory
+        if self.config.gradient_checkpointing and hasattr(
+            self.policy_model, "gradient_checkpointing_enable"
+        ):
+            self.policy_model.gradient_checkpointing_enable()
 
-        self.optimizer = optimizer or AdamW(
-            self.policy_model.parameters(), lr=self.config.learning_rate
-        )
+        # Setup old_model based on config
+        if self.config.use_old_model:
+            self.old_model = old_model or self._clone_model(self.policy_model)
+            if self.config.offload_models_to_cpu:
+                self.old_model.to("cpu")
+            else:
+                self.old_model.to(self.device)
+            self.old_model.eval()
+        else:
+            self.old_model = None
+
+        # Setup ref_model based on config
+        if self.config.use_reference_model:
+            self.ref_model = ref_model or self._clone_model(self.policy_model)
+            if self.config.offload_models_to_cpu:
+                self.ref_model.to("cpu")
+            else:
+                self.ref_model.to(self.device)
+            self._freeze_model(self.ref_model)
+        else:
+            self.ref_model = None
+
+        # Use memory-efficient optimizer if enabled
+        if optimizer:
+            self.optimizer = optimizer
+        elif self.config.memory_efficient_optimizer:
+            self.optimizer = MemoryEfficientAdamW(
+                self.policy_model.parameters(),
+                lr=self.config.learning_rate,
+                enabled=True,
+            )
+        else:
+            self.optimizer = AdamW(
+                self.policy_model.parameters(), lr=self.config.learning_rate
+            )
         self.scheduler = scheduler
 
         self.dafny = dafny or (Dafny(Path(dafny_path)) if dafny_path else None)
@@ -186,7 +221,6 @@ class CustomRLTrainer:
         checkpoint_path = Path(checkpoint_dir) if checkpoint_dir else None
 
         for i in range(num_steps):
-            print(f"Step {i} of {num_steps}")
             minibatch, metadata = self._sample_minibatch(dataset)
             if not minibatch.prompts:
                 continue
@@ -195,7 +229,7 @@ class CustomRLTrainer:
             if not rollouts:
                 continue
 
-            torch.cuda.empty_cache()
+            self._cleanup_memory()
 
             self._score_rollouts(rollouts)
 
@@ -206,30 +240,56 @@ class CustomRLTrainer:
 
             policy_batches = self._build_policy_batch(rollouts, normalized)
 
-            torch.cuda.empty_cache()
-            
+            self._cleanup_memory()
+
             update_metrics = self._update_policy(policy_batches)
             del policy_batches
             reward_metrics = self._summarize_rewards(rollouts)
             del rollouts
-            torch.cuda.empty_cache()
-            metrics = {**reward_metrics, **update_metrics, "step": self._step}
+
+            # Add memory metrics if logging is enabled
+            if self.config.log_memory_usage:
+                memory_metrics = self._log_memory_usage()
+                metrics = {**reward_metrics, **update_metrics, **memory_metrics, "step": self._step}
+            else:
+                metrics = {**reward_metrics, **update_metrics, "step": self._step}
 
             if self._step % self.config.log_freq == 0:
                 self.logger(metrics)
 
-            # if (
-            #     checkpoint_path
-            #     and self.config.checkpoint_freq > 0
-            #     and self._step % self.config.checkpoint_freq == 0
-            # ):
-            #     self._save_checkpoint(checkpoint_path, self._step)
+            # Sync old_model with policy if enabled
+            if (
+                self.config.old_update_freq > 0
+                and self.old_model is not None
+                and self._step % self.config.old_update_freq == 0
+            ):
+                if self.config.offload_models_to_cpu:
+                    self.old_model.to(self.device)
+                self._sync_model(self.policy_model, self.old_model, freeze=False)
+                if self.config.offload_models_to_cpu:
+                    self.old_model.to("cpu")
 
-            # if self.config.ref_update_freq > 0 and (
-            #     self._step % self.config.ref_update_freq == 0
-            # ):
-            #     self._sync_model(self.policy_model, self.ref_model, freeze=True)
+            # Sync ref_model with policy if enabled
+            if (
+                self.config.ref_update_freq > 0
+                and self.ref_model is not None
+                and self._step % self.config.ref_update_freq == 0
+            ):
+                if self.config.offload_models_to_cpu:
+                    self.ref_model.to(self.device)
+                self._sync_model(self.policy_model, self.ref_model, freeze=True)
+                if self.config.offload_models_to_cpu:
+                    self.ref_model.to("cpu")
 
+            # Checkpoint saving
+            if (
+                checkpoint_path
+                and self.config.checkpoint_freq > 0
+                and self._step % self.config.checkpoint_freq == 0
+            ):
+                self._save_checkpoint(checkpoint_path, self._step)
+
+            self._cleanup_memory()
             self._step += 1
 
     def supervised_fine_tune(
@@ -286,8 +346,6 @@ class CustomRLTrainer:
                     continue
 
                 input_ids, attention_mask, labels = batch_tensors
-
-                print("length of input_ids: ", input_ids.size(1))
 
                 with self._autocast_context():
                     outputs = self.policy_model(
@@ -381,78 +439,96 @@ class CustomRLTrainer:
         if len(minibatch.prompts) == 0:
             return rollouts
 
-        for prompt_idx, prompt in enumerate(minibatch.prompts):
-            prompt_ids = minibatch.prompt_token_ids[prompt_idx]
-            prompt_tensor = torch.tensor(
-                prompt_ids, dtype=torch.long, device=self.device
-            ).unsqueeze(0)
-            if pad_token_id is not None:
-                prompt_attention_mask = (prompt_tensor != pad_token_id).long()
+        # Determine which model to use for generation
+        if self.old_model is not None:
+            if self.config.offload_models_to_cpu:
+                generation_context = self._model_on_device(self.old_model, self.device)
             else:
-                prompt_attention_mask = torch.ones_like(prompt_tensor, dtype=torch.long)
+                generation_context = nullcontext()
+            generation_model = self.old_model
+            was_training = False  # old_model is always in eval mode
+        else:
+            generation_context = nullcontext()
+            generation_model = self.policy_model
+            was_training = self.policy_model.training
 
-            batch_input = prompt_tensor.repeat(self.config.group_size, 1)
-
-            model_was_training = self.policy_model.training
-            if model_was_training:
+        with generation_context:
+            if self.old_model is None and was_training:
                 self.policy_model.eval()
+
             try:
-                with torch.no_grad():
-                    with self._autocast_context():
-                        generated = self.policy_model.generate(
-                            input_ids=batch_input,
-                            attention_mask=prompt_attention_mask,
-                            max_new_tokens=self.config.max_new_tokens,
-                            temperature=self.config.temperature,
-                            top_p=self.config.top_p,
-                            do_sample=True,
-                            pad_token_id=pad_token_id,
-                            eos_token_id=eos_token_id,
-                            return_dict_in_generate=True,
-                            output_scores=False,
+                for prompt_idx, prompt in enumerate(minibatch.prompts):
+                    prompt_ids = minibatch.prompt_token_ids[prompt_idx]
+                    prompt_tensor = torch.tensor(
+                        prompt_ids, dtype=torch.long, device=self.device
+                    ).unsqueeze(0)
+                    if pad_token_id is not None:
+                        prompt_attention_mask = (prompt_tensor != pad_token_id).long()
+                    else:
+                        prompt_attention_mask = torch.ones_like(
+                            prompt_tensor, dtype=torch.long
                         )
 
+                    # Batched generation: expand prompt for group_size samples
+                    batch_input = prompt_tensor.expand(self.config.group_size, -1)
+                    batch_attention = prompt_attention_mask.expand(
+                        self.config.group_size, -1
+                    )
+
+                    with torch.no_grad():
+                        with self._autocast_context():
+                            generated = generation_model.generate(
+                                input_ids=batch_input,
+                                attention_mask=batch_attention,
+                                max_new_tokens=self.config.max_new_tokens,
+                                temperature=self.config.temperature,
+                                top_p=self.config.top_p,
+                                do_sample=True,
+                                pad_token_id=pad_token_id,
+                                eos_token_id=eos_token_id,
+                                return_dict_in_generate=True,
+                                output_scores=False,
+                            )
+
+                    sequences = generated.sequences.tolist()
+
+                    for g in range(self.config.group_size):
+                        generated_ids = sequences[g]
+                        completion_ids = generated_ids[len(prompt_ids) :]
+
+                        completion_text = self.tokenizer.decode(
+                            completion_ids, skip_special_tokens=True
+                        )
+                        full_text = self.tokenizer.decode(
+                            generated_ids, skip_special_tokens=True
+                        )
+
+                        rollout_metadata = dict(metadata[prompt_idx])
+                        rollout_metadata["generated_code"] = completion_text
+
+                        response = Response(
+                            prompt=prompt,
+                            full_text=full_text,
+                            completion_text=completion_text,
+                            prompt_token_ids=prompt_ids,
+                            prompt_tokens=[],
+                            generated_token_ids=completion_ids,
+                            is_complete=bool(
+                                eos_token_id
+                                and eos_token_id in completion_ids
+                                and completion_ids[-1] == eos_token_id
+                            ),
+                            reward=0.0,
+                            reward_components={},
+                        )
+                        rollouts.append(
+                            RolloutItem(response=response, metadata=rollout_metadata)
+                        )
             finally:
-                if model_was_training:
+                if self.old_model is None and was_training:
                     self.policy_model.train()
 
-            sequences = generated.sequences.tolist()
-
-            for _ in range(self.config.group_size):
-
-                generated_ids = sequences[_]
-                completion_ids = generated_ids[len(prompt_ids) :]
-
-                completion_text = self.tokenizer.decode(
-                    completion_ids, skip_special_tokens=True
-                )
-                # print(f"Completion text: {completion_text}")
-                full_text = self.tokenizer.decode(
-                    generated_ids, skip_special_tokens=True
-                )
-
-                print(f"Full text: {full_text}")
-
-                rollout_metadata = dict(metadata[prompt_idx])
-                rollout_metadata["generated_code"] = completion_text
-
-                response = Response(
-                    prompt=prompt,
-                    full_text=full_text,
-                    completion_text=completion_text,
-                    prompt_token_ids=prompt_ids,
-                    prompt_tokens=[],
-                    generated_token_ids=completion_ids,
-                    is_complete=bool(
-                        eos_token_id
-                        and eos_token_id in completion_ids
-                        and completion_ids[-1] == eos_token_id
-                    ),
-                    reward=0.0,
-                    reward_components={},
-                )
-                rollouts.append(RolloutItem(response=response, metadata=rollout_metadata))
-
+        self._cleanup_memory()
         return rollouts
 
     # --------------------------------------------------------------------- #
@@ -664,10 +740,6 @@ class CustomRLTrainer:
             target_token_mask = target_mask[:, 1:]
 
             with self._autocast_context():
-
-                print(f"Allocated before: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
-                print(f"Reserved before:  {torch.cuda.memory_reserved() / 1024**2:.2f} MB")
-
                 outputs = self.policy_model(
                     input_ids=input_token_ids,
                     attention_mask=attention_for_model,
@@ -704,6 +776,11 @@ class CustomRLTrainer:
             del advantages
 
         grad_norm = self._clip_gradients(self.policy_model)
+        self.optimizer.step()
+        self.optimizer.zero_grad(set_to_none=True)
+
+        if self.scheduler is not None:
+            self.scheduler.step()
 
         return {
             "loss": float(total_loss),
@@ -748,6 +825,45 @@ class CustomRLTrainer:
             },
             step_dir / "trainer_state.pt",
         )
+
+    # --------------------------------------------------------------------- #
+    # Memory Management Utilities
+    # --------------------------------------------------------------------- #
+    def _cleanup_memory(self) -> None:
+        """Force garbage collection and clear CUDA cache."""
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    @contextmanager
+    def _model_on_device(
+        self, model: nn.Module, device: torch.device
+    ) -> Generator[nn.Module, None, None]:
+        """Temporarily move a model to a device, then move it back."""
+        original_device = next(model.parameters()).device
+        try:
+            model.to(device)
+            yield model
+        finally:
+            model.to(original_device)
+            self._cleanup_memory()
+
+    def _log_memory_usage(self, tag: str = "") -> Dict[str, float]:
+        """Log current GPU memory usage."""
+        if not torch.cuda.is_available():
+            return {}
+
+        allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+        reserved = torch.cuda.memory_reserved() / 1024**3  # GB
+        max_allocated = torch.cuda.max_memory_allocated() / 1024**3
+
+        suffix = f"_{tag}" if tag else ""
+        memory_info = {
+            f"memory_allocated_gb{suffix}": allocated,
+            f"memory_reserved_gb{suffix}": reserved,
+            f"memory_max_allocated_gb{suffix}": max_allocated,
+        }
+        return memory_info
 
     # --------------------------------------------------------------------- #
     # Low-level Utilities

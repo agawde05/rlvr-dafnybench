@@ -164,3 +164,41 @@ class GrpoConfig:
         default=True,
         metadata={"help": "Enable mixed precision (fp16) training when supported."},
     )
+
+    # Memory optimization options
+    use_reference_model: bool = field(
+        default=True,
+        metadata={
+            "help": "Whether to use a separate reference model for KL penalty. "
+            "If False, KL penalty is disabled."
+        },
+    )
+    use_old_model: bool = field(
+        default=True,
+        metadata={
+            "help": "Whether to use importance sampling with old policy. "
+            "If False, use on-policy updates only."
+        },
+    )
+    offload_models_to_cpu: bool = field(
+        default=True,
+        metadata={
+            "help": "Whether to keep old_model and ref_model on CPU to save GPU memory."
+        },
+    )
+    gradient_checkpointing: bool = field(
+        default=True,
+        metadata={
+            "help": "Enable gradient checkpointing to reduce activation memory."
+        },
+    )
+    log_memory_usage: bool = field(
+        default=False,
+        metadata={"help": "Whether to log GPU memory usage during training."},
+    )
+    memory_efficient_optimizer: bool = field(
+        default=True,
+        metadata={
+            "help": "Whether to use memory-efficient AdamW with CPU state offloading."
+        },
+    )
