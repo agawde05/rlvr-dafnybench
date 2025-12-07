@@ -83,6 +83,38 @@ def _prepare_supervised_pairs(df) -> List[Dict[str, str]]:
     return pairs
 
 
+def _prepare_writer_pairs(df) -> List[Dict[str, str]]:
+    """
+    Produce (unimplemented_body, body) pairs for the task-writer codegen pipeline.
+    """
+    required = ("unimplemented_body", "body")
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        raise ValueError(
+            f"DafnyBench data is missing required columns for writer training: {missing}"
+        )
+
+    unimplemented_bodies = df.get_column("unimplemented_body")
+    bodies = df.get_column("body")
+
+    pairs: List[Dict[str, str]] = []
+    for idx in range(len(df)):
+        stub = unimplemented_bodies[idx]
+        body = bodies[idx]
+        if isinstance(stub, str) and isinstance(body, str):
+            stub_text = stub.strip()
+            body_text = body.strip()
+            if stub_text and body_text:
+                pairs.append(
+                    {"unimplemented_body": stub_text, "body": body_text}
+                )
+
+    if not pairs:
+        raise ValueError("No valid writer training pairs were found in DafnyBench.")
+
+    return pairs
+
+
 def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
