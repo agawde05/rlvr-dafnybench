@@ -193,188 +193,83 @@ def remove_code_from_method(old_code: str) -> str:
 
 if __name__ == "__main__":
     test_code = """
-    // Noa Leron 207131871
-// Tsuri Farhana 315016907
 
-
-
-predicate Sorted(q: seq<int>) {
-	forall i,j :: 0 <= i <= j < |q| ==> q[i] <= q[j]
-}
-
-/*
-Goal: Implement the well known merge sort algorithm in O(a.Length X log_2(a.Length)) time, recursively.
-
-- Divide the contents of the original array into two local arrays
-- After sorting the local arrays (recursively), merge the contents of the two returned arrays using the Merge method (see below)
-- DO NOT modify the specification or any other part of the method's signature
-- DO NOT introduce any further methods
-*/
-method MergeSort(a: array<int>) returns (b: array<int>)
-	ensures b.Length == a.Length && Sorted(b[..]) && multiset(a[..]) == multiset(b[..])
+method FindWinner'<Candidate(==)>(a: seq<Candidate>, ghost K: Candidate) returns (k: Candidate)
+  requires HasMajority(a, 0, |a|, K) // K has a (strict) majority of the votes
+  ensures k == K  // find K
 {
-	if (a.Length <= 1) {b := a;}
-    else{
-        var mid: nat := a.Length / 2;
-        var a1: array<int> := new int[mid];
-        var a2: array<int> := new int[a.Length - mid];
+  k := a[0]; // Current candidate: the first element
+  var lo, up, c := 0, 1, 1; // Window: [0..1], number of occurrences of k in the window: 1
+  while up < |a|
+  {
+    if a[up] == k {
+      // One more occurrence of k
+      up, c := up + 1, c + 1;
+    } else if 2 * c > up + 1 - lo {
+      // An occurrence of another value, but k still has the majority
+      up := up + 1;
+    } else {
+      // An occurrence of another value and k just lost the majority.
+      // Prove that k has exactly 50% in the future window a[lo..up + 1]:
+      calc /* k has 50% among a[lo..up + 1] */ {
+        true;
+      ==  // negation of the previous branch condition;
+        2 * c <= up + 1 - lo;
+      ==  // loop invariant (3)
+        2 * Count(a, lo, up, k) <= up + 1 - lo;
+      == calc {
+           true;
+         ==  // loop invariant (2)
+           HasMajority(a, lo, up, k);
+         ==  // def. HasMajority
+           2 * Count(a, lo, up, k) > up - lo;
+         ==
+           2 * Count(a, lo, up, k) >= up + 1 - lo;
+         }
+        2 * Count(a, lo, up, k) == up + 1 - lo;
+      }
+      up := up + 1;
 
-        var i: nat := 0;
-        while (i < a1.Length )
-        {
-            a1[i] := a[i];
-            a2[i] := a[i+mid];
-            i:=i+1;
-        }
-        
-        if(a1.Length < a2.Length) {
-            a2[i] := a[i+mid];
-        } // If a.Length is odd.
-        else{
-        }
+      // We are going to start a new window a[up..up + 1] and choose a new candidate,
+      // so invariants (2) and (3) will be easy to re-establish.
+      // To re-establish (1) we have to prove that K has majority among a[up..], as up will become the new lo.
+      // The main idea is that we had enough K's in a[lo..], and there cannot be too many in a[lo..up].
+      calc /* K has majority among a[up..] */ {
+        2 * Count(a, up, |a|, K);
+      ==  { Lemma_Split(a, lo, up, |a|, K); }
+        2 * Count(a, lo, |a|, K) - 2 * Count(a, lo, up, K);
+      >  { assert HasMajority(a, lo, |a|, K); } // loop invariant (1)
+        |a| - lo - 2 * Count(a, lo, up, K);
+      >=  { if k == K {
+              calc {
+                2 * Count(a, lo, up, K);
+              ==
+                2 * Count(a, lo, up, k);
+              ==  { assert 2 * Count(a, lo, up, k) == up - lo; } // k has 50% among a[lo..up]
+                up - lo;
+              }
+            } else {
+              calc {
+                2 * Count(a, lo, up, K);
+              <=  { Lemma_Unique(a, lo, up, k, K); }
+                2 * ((up - lo) - Count(a, lo, up, k));
+              ==  { assert 2 * Count(a, lo, up, k) == up - lo; } // k has 50% among a[lo..up]
+                up - lo;
+              }
+            }
+          }
+        |a| - lo - (up - lo);
+      ==
+        |a| - up;
+      }
 
-        a1:= MergeSort(a1);
-        a2:= MergeSort(a2);
-        b := new int [a.Length];
-        Merge(b, a1, a2);
+      k, lo, up, c := a[up], up, up + 1, 1;
     }
-} 
-
-ghost predicate Inv(a: seq<int>, a1: seq<int>, a2: seq<int>, i: nat, mid: nat){
-    (i <= |a1|) && (i <= |a2|) && (i+mid <= |a|) &&
-    (a1[..i] == a[..i]) && (a2[..i] == a[mid..(i+mid)])
-}
-
-/*
-Goal: Implement iteratively, correctly, efficiently, clearly
-
-DO NOT modify the specification or any other part of the method's signature
-*/
-method Merge(b: array<int>, c: array<int>, d: array<int>)
-	requires b != c && b != d && b.Length == c.Length + d.Length
-	requires Sorted(c[..]) && Sorted(d[..])
-	ensures Sorted(b[..]) && multiset(b[..]) == multiset(c[..])+multiset(d[..])
-	modifies b
-{
-	var i: nat, j: nat := 0, 0;
-	while i + j < b.Length
-	{	
-		i,j := MergeLoop (b,c,d,i,j);
-	}
-	LemmaMultysetsEquals(b[..],c[..],d[..],i,j);	
-		
+  }
+  Lemma_Unique(a, lo, |a|, K, k);  // both k and K have a majority among a[lo..], so K == k
 }
 
 
-//This is a method that replace the loop body
-method {:verify true} MergeLoop(b: array<int>, c: array<int>, d: array<int>,i0: nat , j0: nat)  returns (i: nat, j: nat)
-		requires b != c && b != d && b.Length == c.Length + d.Length
-		requires Sorted(c[..]) && Sorted(d[..])
-		requires i0 <= c.Length && j0 <= d.Length && i0 + j0 <= b.Length
-		requires InvSubSet(b[..],c[..],d[..],i0,j0)
-		requires InvSorted(b[..],c[..],d[..],i0,j0)
-		requires i0 + j0 < b.Length
-
-		modifies b
-
-		ensures i <= c.Length && j <= d.Length && i + j <= b.Length
-		ensures InvSubSet(b[..],c[..],d[..],i,j)
-		ensures InvSorted(b[..],c[..],d[..],i,j)
-		//decreases ensures
-		ensures 0 <= c.Length - i < c.Length - i0 || (c.Length - i == c.Length - i0 && 0 <= d.Length - j < d.Length - j0)
-		{
-
-			i,j := i0,j0;
-				
-				if(i == c.Length || (j< d.Length && d[j] < c[i])){
-					// in this case we take the next value from d
-				b[i+j] := d[j];
-				lemmaInvSubsetTakeValueFromD(b[..],c[..],d[..],i,j);
-
-				j := j + 1;
-			}
-			else{
-					// in this case we take the next value from c
-				
-				b[i+j] := c[i];
-
-				lemmaInvSubsetTakeValueFromC(b[..],c[..],d[..],i,j);
-				i := i + 1;
-			}
-
-
-		}
-
-	
-//Loop invariant - b is sprted so far and the next two potential values that will go into b are bigger then the biggest value in b.
-ghost predicate InvSorted(b: seq<int>, c: seq<int>, d: seq<int>, i: nat, j: nat){
-	i <= |c| && j <= |d| && i + j <= |b| &&
-	((i+j > 0 && i < |c|) ==> (b[j + i - 1] <= c[i])) &&
-	((i+j > 0 && j < |d|) ==> (b[j + i - 1] <= d[j])) &&
-	Sorted(b[..i+j])
-	}
-
-
-//Loop invariant - the multiset of the prefix of b so far is the same multiset as the prefixes of c and d so far.
-ghost predicate InvSubSet(b: seq<int>, c: seq<int>, d: seq<int>, i: nat, j: nat){
-	i <= |c| && j <= |d| && i + j <= |b| &&
-	multiset(b[..i+j]) == multiset(c[..i]) + multiset(d[..j])
-}
-
-//This lemma helps dafny see that if the prefixs of arrays are the same multiset until the end of the arrays,
-//all the arrays are the same multiset.
-lemma LemmaMultysetsEquals (b: seq<int>, c: seq<int>, d: seq<int>, i: nat, j: nat)
-	requires i == |c|;
-	requires j == |d|;
-	requires i + j == |b|;
-	requires multiset(b[..i+j]) == multiset(c[..i]) + multiset(d[..j])
-	ensures multiset(b[..]) == multiset(c[..])+multiset(d[..]);
-	{
-	}
-
-
-//This lemma helps dafny see that after adding the next value from c to b the prefixes are still the same subsets.
-lemma lemmaInvSubsetTakeValueFromC (b: seq<int>, c: seq<int>, d: seq<int>, i: nat, j: nat)
-	requires i < |c|;
-	requires j <= |d|;
-	requires i + j < |b|;
-	requires |c| + |d| == |b|;
-	requires multiset(b[..i+j]) == multiset(c[..i]) + multiset(d[..j])
-	requires b[i+j] == c[i]
-	ensures multiset(b[..i+j+1]) == multiset(c[..i+1])+multiset(d[..j])
-	{
-	}
-
-
-
-//This lemma helps dafny see that after adding the next value from d to b the prefixes are still the same subsets.
-lemma{:verify true} lemmaInvSubsetTakeValueFromD (b: seq<int>, c: seq<int>, d: seq<int>, i: nat, j: nat)
-	requires i <= |c|;
-	requires j < |d|;
-	requires i + j < |b|;
-	requires |c| + |d| == |b|;
-	requires multiset(b[..i+j]) == multiset(c[..i]) + multiset(d[..j])
-	requires b[i+j] == d[j]
-	ensures multiset(b[..i+j+1]) == multiset(c[..i])+multiset(d[..j+1])
-	{
-	}
-
-
-
-
-
-method Main() {
-	var a := new int[3] [4, 8, 6];
-	var q0 := a[..];
-	a := MergeSort(a);
-	print "\nThe sorted version of ", q0, " is ", a[..];
-
-	a := new int[5] [3, 8, 5, -1, 10];
-	q0 := a[..];
-	a := MergeSort(a);
-	print "\nThe sorted version of ", q0, " is ", a[..];
-	//assert a[..] == [-1, 3, 5, 8, 10];
-}
     """
     cleaned_code = remove_code_from_method(test_code)
     print(cleaned_code)

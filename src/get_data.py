@@ -5,6 +5,11 @@ import polars as pl
 
 DEFAULT_SAVE_PATH = Path(__file__).resolve().parents[1] / "data" / "DafnyBench" / "dafnybench.parquet"
 
+def add_spec_without_code_to_data(data: pl.DataFrame) -> pl.DataFrame:
+
+
+    pass
+
 
 def load_dafnybench_data(split: str = "test") -> pl.DataFrame:
     """Loads the DafnyBench dataset into a polars DataFrame."""
