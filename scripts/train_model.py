@@ -1,20 +1,25 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Dict, List
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from src.reward import build_verification_reward
 
-from src.data_types import GrpoConfig
-from scripts.get_data import (
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.reward import build_verification_reward  # noqa: E402
+from src.data_types import GrpoConfig  # noqa: E402
+from scripts.get_data import (  # noqa: E402
     DEFAULT_SAVE_PATH,
     load_dafnybench_data,
     load_saved_dafnybench_data,
     save_dafnybench_data,
 )
-from src.trainer import CustomRLTrainer
+from src.trainer import CustomRLTrainer  # noqa: E402
 
 
 def _load_or_prepare_dataframe(split: str = "test"):

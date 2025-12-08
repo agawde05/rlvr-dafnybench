@@ -18,7 +18,8 @@ import re
 from dafny_file import Dafny
 from data_types import GrpoConfig, Response
 from src.rlvr_dafnybench.utils import print_live_tensors
-from verification_task import (
+from .verification_task import (
+    ANNOTATION_PATCH_SCHEMA_JSON,
     ASSUMTION_WEIGHT,
     DELETION_WEIGHT,
     FORMAT_WEIGHT,
@@ -772,7 +773,10 @@ class CustomRLTrainer:
         return {key: value / count for key, value in accumulator.items()}
 
     def _format_prompt(self, prompt: str) -> str:
-        user_text = RL_USER_TEMPLATE.format(dafny_code_snippet=prompt)
+        user_text = RL_USER_TEMPLATE.format(
+            dafny_code_snippet=prompt,
+            annotation_schema=ANNOTATION_PATCH_SCHEMA_JSON,
+        )
         return self._build_chat_prompt(RL_SYSTEM_MESSAGE, user_text)
 
     def _format_sft_prompt(self, body: str) -> str:

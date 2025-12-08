@@ -1,12 +1,28 @@
+import json
 from typing import Mapping, Any
 
-from dafny_file import DafnyFile, Dafny
+from .annotation_patch import apply_edits, patch_json_schema, try_parse_edits
+from .dafny_file import DafnyFile, Dafny
 
-RL_SYSTEM_MESSAGE = "You revise Dafny programs. Respond with Dafny code only."
+ANNOTATION_PATCH_SCHEMA = patch_json_schema()
+ANNOTATION_PATCH_SCHEMA_JSON = json.dumps(ANNOTATION_PATCH_SCHEMA, indent=2)
+
+RL_SYSTEM_MESSAGE = (
+    "You revise Dafny programs by ADDING ONLY annotations (ghost code, specs, invariants). "
+    "Respond ONLY with JSON matching the provided schema."
+)
 RL_USER_TEMPLATE = (
-    "Update the program below so Dafny verifies it.\n"
+    "Add the minimal Dafny annotations needed for verification.\n"
+    "Return ONLY a JSON array that matches this schema:\n"
+    "{annotation_schema}\n\n"
+    "IMPORTANT:\n"
+    "- Use 1-based line numbers from the ORIGINAL code.\n"
+    "- Only insert; do NOT delete or rewrite existing lines.\n"
+    "- `position` must be `insert_before` or `insert_after` relative to the anchor line.\n"
+    "- Keep indentation consistent; set `indent` false only if you supply your own whitespace.\n"
+    "- No prose, no code fences, no explanations outside the JSON.\n\n"
+    "PROGRAM:\n"
     "{dafny_code_snippet}\n"
-    "Return the complete Dafny code and nothing else."
 )
 
 SFT_SYSTEM_MESSAGE = "You produce verified Dafny programs. Reply with Dafny code only."
@@ -17,28 +33,44 @@ SFT_USER_TEMPLATE = (
 )
 
 FORMAT_WEIGHT = 0.1
-VERIFICATION_WEIGHT = 1.0
+COMPILE_WEIGHT = 2.0
+VERIFICATION_WEIGHT = 3.0
 ASSUMTION_WEIGHT = 1.0
 DELETION_WEIGHT = 1.0
 
 
+def get_generated_dafny_code(response: str, original_code: str) -> DafnyFile:
+    """
+    Interpret model output, accepting either a JSON patch or full Dafny code.
+
+    JSON patches are applied to the original code to reconstruct the annotated
+    program locally, keeping generations compact.
+    """
+    payload = response.strip()
+    if not payload:
+        raise ValueError("Model response was empty; expected Dafny code or patch.")
+
+    edits = try_parse_edits(payload)
+    if edits is not None:
+        updated = apply_edits(original_code, edits)
+        return DafnyFile.from_code(updated)
+
+    return DafnyFile.from_code(payload)
+
+
 def format_reward_function(response: str) -> float:
-    """Reward 1.0 when the output looks like raw Dafny code with no meta markers."""
+    """
+    Reward 1.0 when the output looks like valid Dafny code OR a valid patch.
+    """
     stripped = response.strip()
     if not stripped:
         return 0.0
+
+    if try_parse_edits(stripped) is not None:
+        return 0.1
+
     forbidden_markers = ("<think", "<answer", "```")
-    if any(marker in stripped for marker in forbidden_markers):
-        return 0.0
-    return 0.1
-
-
-def get_generated_dafny_code(response: str, original_code: str) -> DafnyFile:
-    """Interpret the raw model response as Dafny code."""
-    code = response.strip()
-    if not code:
-        raise ValueError("Model response was empty; expected Dafny code.")
-    return DafnyFile.from_code(code)
+    return 0.0 if any(marker in stripped for marker in forbidden_markers) else 0.1
 
 
 def assume_reward_function(original_code: str, modified_code: str) -> float:
@@ -56,6 +88,12 @@ def deletion_reward_function(original_code: str, modified_code: str) -> float:
         return 0.2
     return -1.0
 
+def compile_reward_function(dafny_file: DafnyFile, dafny: Dafny) -> float:
+    """Reward function for whether the modified Dafny code compiles."""
+    compiles = dafny.compile_no_verify(dafny_file)
+    if compiles:
+        return 1.0
+    return 0.0
 
 def verification_reward_function(dafny_file: DafnyFile, dafny: Dafny) -> float:
     """Reward function for whether the modified Dafny code verifies."""
