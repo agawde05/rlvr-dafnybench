@@ -109,7 +109,7 @@ class Dafny:
                         str(timeout_seconds),
                     ],
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
+                    stderr=subprocess.PIPE,
                     text=True,
                     timeout=timeout_seconds + 5,
                 )
@@ -122,4 +122,32 @@ class Dafny:
                 return False
             except Exception as e:
                 print(f"Error during Dafny verification: {e}")
+                return False
+
+    def compile_no_verify(self, dafny_file: DafnyFile) -> bool:
+        """Compiles the Dafny File without verification.
+
+        Returns True if compilation succeeds, False otherwise.
+        """
+        with NamedTemporaryFile(mode="w+", suffix=".dfy") as f:
+            code = dafny_file.get_code()
+            if code is None:
+                raise ValueError("DafnyFile has no code to write.")
+            f.write(code)
+            f.flush()
+
+            try:
+                # run the Dafny compiler without verification
+                proc = subprocess.run(
+                    [str(self.dafny_path), "/noVerify", str(f.name)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+
+                print(proc.stdout)
+                return proc.returncode == 0
+
+            except Exception as e:
+                print(f"Error during Dafny compilation: {e}")
                 return False

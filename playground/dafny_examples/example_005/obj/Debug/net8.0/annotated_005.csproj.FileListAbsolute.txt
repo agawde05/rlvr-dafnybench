@@ -1,0 +1,15 @@
+/home/ec2-user/rlvr-dafnybench/playground/dafny_examples/example_005/obj/Debug/net8.0/annotated_005.GeneratedMSBuildEditorConfig.editorconfig
+/home/ec2-user/rlvr-dafnybench/playground/dafny_examples/example_005/obj/Debug/net8.0/annotated_005.AssemblyInfoInputs.cache
+/home/ec2-user/rlvr-dafnybench/playground/dafny_examples/example_005/obj/Debug/net8.0/annotated_005.AssemblyInfo.cs
+/home/ec2-user/rlvr-dafnybench/playground/dafny_examples/example_005/obj/Debug/net8.0/annotated_005.csproj.CoreCompileInputs.cache
+/home/ec2-user/rlvr-dafnybench/playground/dafny_examples/example_005/obj/Debug/net8.0/annotated_005.sourcelink.json
+/home/ec2-user/rlvr-dafnybench/playground/dafny_examples/example_005/annotated_005
+/home/ec2-user/rlvr-dafnybench/playground/dafny_examples/example_005/obj/Debug/net8.0/annotated_005.dll
+/home/ec2-user/rlvr-dafnybench/playground/dafny_examples/example_005/obj/Debug/net8.0/refint/annotated_005.dll
+/home/ec2-user/rlvr-dafnybench/playground/dafny_examples/example_005/obj/Debug/net8.0/annotated_005.pdb
+/home/ec2-user/rlvr-dafnybench/playground/dafny_examples/example_005/annotated_005.deps.json
+/home/ec2-user/rlvr-dafnybench/playground/dafny_examples/example_005/obj/Debug/net8.0/annotated_005.genruntimeconfig.cache
+/home/ec2-user/rlvr-dafnybench/playground/dafny_examples/example_005/annotated_005.runtimeconfig.json
+/home/ec2-user/rlvr-dafnybench/playground/dafny_examples/example_005/annotated_005.dll
+/home/ec2-user/rlvr-dafnybench/playground/dafny_examples/example_005/obj/Debug/net8.0/ref/annotated_005.dll
+/home/ec2-user/rlvr-dafnybench/playground/dafny_examples/example_005/annotated_005.pdb
